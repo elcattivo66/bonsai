@@ -38,13 +38,32 @@ impl Default for RealBcachefs {
     }
 }
 
+impl RealBcachefs {
+    /// `bcachefs subvolume snapshot <source> <dest>`.
+    fn snapshot_command(source: &Path, dest: &Path) -> Command {
+        let mut command = Command::new("bcachefs");
+        command
+            .args(["subvolume", "snapshot"])
+            .arg(source)
+            .arg(dest);
+        command
+    }
+
+    /// `bcachefs subvolume delete <path>`.
+    fn delete_command(path: &Path) -> Command {
+        let mut command = Command::new("bcachefs");
+        command.args(["subvolume", "delete"]).arg(path);
+        command
+    }
+}
+
 impl Bcachefs for RealBcachefs {
     fn snapshot(&self, source: &Path, dest: &Path) -> Result<()> {
         let attempts = self.retries.max(1);
         let mut last_err = None;
 
         for attempt in 1..=attempts {
-            match run_bcachefs(&["subvolume", "snapshot"], source, dest) {
+            match run(Self::snapshot_command(source, dest)) {
                 Ok(()) => return Ok(()),
                 Err(err) => {
                     last_err = Some(err);
@@ -66,29 +85,36 @@ impl Bcachefs for RealBcachefs {
     }
 
     fn delete(&self, path: &Path) -> Result<()> {
-        run_bcachefs(&["subvolume", "delete"], path, path)
+        run(Self::delete_command(path))
     }
 }
 
-fn run_bcachefs(args: &[&str], source: &Path, dest: &Path) -> Result<()> {
-    let output = Command::new("bcachefs")
-        .args(args)
-        .arg(source)
-        .arg(dest)
+fn run(mut command: Command) -> Result<()> {
+    let described = describe(&command);
+    let output = command
         .output()
-        .with_context(|| format!("running bcachefs {}", args.join(" ")))?;
+        .with_context(|| format!("running {described}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "bcachefs {} {} {} failed: {}",
-            args.join(" "),
-            source.display(),
-            dest.display(),
-            stderr.trim()
-        );
+        bail!("{described} failed: {}", stderr.trim());
     }
     Ok(())
+}
+
+/// Render a command as a human-readable string for logs and errors.
+fn describe(command: &Command) -> String {
+    let program = command.get_program().to_string_lossy().into_owned();
+    let args = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if args.is_empty() {
+        program
+    } else {
+        format!("{program} {args}")
+    }
 }
 
 /// A recorded call on a [`MockBcachefs`].
@@ -142,5 +168,35 @@ impl Bcachefs for MockBcachefs {
             path: path.to_path_buf(),
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(command: &Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn snapshot_passes_source_and_dest() {
+        let command = RealBcachefs::snapshot_command(Path::new("/a"), Path::new("/a/.snapshots/x"));
+        assert_eq!(
+            args(&command),
+            ["subvolume", "snapshot", "/a", "/a/.snapshots/x"]
+        );
+    }
+
+    #[test]
+    fn delete_passes_a_single_path() {
+        let command = RealBcachefs::delete_command(Path::new("/a/.snapshots/daily-20260101"));
+        assert_eq!(
+            args(&command),
+            ["subvolume", "delete", "/a/.snapshots/daily-20260101"]
+        );
     }
 }
