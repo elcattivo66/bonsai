@@ -40,6 +40,10 @@ pub fn tiers_for(now: NaiveDate) -> Vec<Tier> {
 /// `existing` are the snapshots currently present in `snapshot_dir`; the plan
 /// is pure and performs no I/O. New snapshots are included when deciding what
 /// to prune, matching the shell script's create-then-prune ordering.
+///
+/// A tier with `retention.get(tier) == 0` is treated as disabled: no new
+/// snapshots are created for it, but any existing snapshots of that tier are
+/// still pruned to zero.
 pub fn plan(
     now: NaiveDate,
     snapshot_dir: &Path,
@@ -50,6 +54,9 @@ pub fn plan(
     let mut combined = existing.to_vec();
 
     for tier in tiers_for(now) {
+        if retention.get(tier) == 0 {
+            continue;
+        }
         let already_present = existing.iter().any(|s| s.tier == tier && s.date == now);
         if !already_present {
             let snapshot = Snapshot::new(tier, now, snapshot_dir);
@@ -150,14 +157,38 @@ mod tests {
     }
 
     #[test]
-    fn newly_created_snapshot_can_be_pruned_when_keep_is_zero() {
+    fn keep_zero_disables_creation_with_no_existing() {
         let dir = Path::new("/spool/x/.snapshots");
         let retention = Retention {
             daily: 0,
             ..Retention::default()
         };
         let plan = plan(date(2026, 10, 14), dir, &[], retention);
-        assert_eq!(names(&plan.create), vec!["daily-20261014"]);
-        assert_eq!(names(&plan.prune), vec!["daily-20261014"]);
+        assert!(plan.create.is_empty(), "keep=0 must not create");
+        assert!(plan.prune.is_empty());
+    }
+
+    #[test]
+    fn keep_zero_prunes_existing_snapshots() {
+        let dir = Path::new("/spool/x/.snapshots");
+        let existing: Vec<Snapshot> = (1..=4)
+            .map(|d| Snapshot::new(Tier::Daily, date(2026, 9, d), dir))
+            .collect();
+        let retention = Retention {
+            daily: 0,
+            ..Retention::default()
+        };
+        let plan = plan(date(2026, 9, 10), dir, &existing, retention);
+        assert!(plan.create.is_empty());
+        assert_eq!(
+            names(&plan.prune),
+            vec![
+                "daily-20260901",
+                "daily-20260902",
+                "daily-20260903",
+                "daily-20260904",
+            ],
+            "keep=0 must prune every existing snapshot of that tier"
+        );
     }
 }

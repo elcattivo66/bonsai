@@ -21,7 +21,8 @@ On each run, for every configured target:
 
 Snapshots are named `<tier>-YYYYMMDD` and stored under
 `<target>/<snapshot_subdir>/` (default `.snapshots`). They are read-only
-subvolumes; browse with `ls`, restore with `cp -a` or `bcp`.
+subvolumes; browse with `ls`, restore with `cp -a` (or
+`cp --reflink=auto` for copy-on-write clones within the same filesystem).
 
 ## Configuration
 

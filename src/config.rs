@@ -86,24 +86,56 @@ impl Config {
         if self.snapshot_subdir.is_empty() {
             anyhow::bail!("snapshot_subdir must not be empty");
         }
+        let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
         for target in &self.targets {
             if target.path.as_os_str().is_empty() {
                 anyhow::bail!("target path must not be empty");
+            }
+            let normalized = normalize_path(&target.path);
+            if !seen.insert(normalized) {
+                anyhow::bail!("duplicate target path: {}", target.path.display());
             }
         }
         Ok(())
     }
 
     /// Targets selected by an optional path filter. An empty filter selects all.
+    /// Path comparison normalises trailing slashes and resolves `.` / `..`
+    /// components so that `/spool/garage` and `/spool/garage/` match.
     pub fn selected(&self, only: &[PathBuf]) -> Vec<&Target> {
         if only.is_empty() {
             self.targets.iter().collect()
         } else {
+            let wanted: Vec<PathBuf> = only.iter().map(|p| normalize_path(p)).collect();
             self.targets
                 .iter()
-                .filter(|t| only.iter().any(|p| p == &t.path))
+                .filter(|t| wanted.iter().any(|w| w == &normalize_path(&t.path)))
                 .collect()
         }
+    }
+}
+
+/// Normalise a path for comparison: drop trailing slashes, resolve `.` and
+/// `..` lexically. Does not follow symlinks (that would require the path to
+/// exist on disk).
+fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::{Component, PathBuf as PB};
+    let mut out = PB::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        PB::from(".")
+    } else {
+        out
     }
 }
 
@@ -177,5 +209,56 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("parsing config"));
+    }
+
+    #[test]
+    fn rejects_duplicate_target_paths() {
+        let err = Config::parse(
+            r#"
+            [[target]]
+            path = "/spool/x"
+            [[target]]
+            path = "/spool/x"
+            "#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate target path"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_target_paths_after_normalisation() {
+        // Trailing slash should be treated as the same path.
+        let err = Config::parse(
+            r#"
+            [[target]]
+            path = "/spool/x"
+            [[target]]
+            path = "/spool/x/"
+            "#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate target path"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn selected_matches_paths_with_trailing_slash() {
+        let cfg = Config::parse(
+            r#"
+            [[target]]
+            path = "/spool/garage"
+            "#,
+        )
+        .unwrap();
+        let only = vec![PathBuf::from("/spool/garage/")];
+        assert_eq!(cfg.selected(&only).len(), 1);
+
+        let only = vec![PathBuf::from("/spool/other/")];
+        assert!(cfg.selected(&only).is_empty());
     }
 }
