@@ -2,12 +2,17 @@
 name = "bonsai"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.74"
+rust-version = "1.85"
 description = "Grandfather-father-son snapshot manager for bcachefs (snapper/sanoid-style)"
 license = "AGPL-3.0-only"
 repository = "https://github.com/elcattivo66/bonsai"
 readme = "README.md"
 default-run = "bonsai"
+
+[features]
+# Compiles the in-memory MockBcachefs backend; enabled for tests via the
+# self dev-dependency below, never in release builds.
+test-util = []
 
 [dependencies]
 anyhow = "1"
@@ -22,6 +27,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tempfile = "3"
+bonsai = { path = ".", features = ["test-util"] }
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -20,10 +20,6 @@ struct Cli {
     )]
     config: PathBuf,
 
-    /// Show what would happen without touching the filesystem.
-    #[arg(long, global = true)]
-    dry_run: bool,
-
     #[command(subcommand)]
     command: Command,
 }
@@ -32,6 +28,10 @@ struct Cli {
 enum Command {
     /// Create snapshots and prune according to the retention policy.
     Snapshot {
+        /// Show what would happen without touching the filesystem.
+        #[arg(long)]
+        dry_run: bool,
+
         /// Restrict to these target paths (default: all configured targets).
         #[arg(value_name = "TARGET")]
         targets: Vec<PathBuf>,
@@ -50,7 +50,7 @@ fn main() -> Result<()> {
     let config = Config::load(&cli.config)?;
 
     match cli.command {
-        Command::Snapshot { targets } => app::snapshot(&config, cli.dry_run, &targets),
+        Command::Snapshot { dry_run, targets } => app::snapshot(&config, dry_run, &targets),
         Command::List { targets } => app::list(&config, &targets),
     }
 }

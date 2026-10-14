@@ -156,8 +156,99 @@ fn delete_failures_continue_and_surface_as_error() {
     assert_eq!(deleted_snapshots(&mock.calls()).len(), 3);
     let message = format!("{:#}", result.unwrap_err());
     assert!(
-        message.contains("2 delete(s) failed"),
+        message.contains("2 operation(s) failed"),
         "unexpected error: {message}"
+    );
+}
+
+#[test]
+fn snapshot_named_regular_files_are_ignored() {
+    // A regular file with a snapshot-like name must be reported and ignored,
+    // not planned for deletion (the old shell script checked `[[ -d ]]`).
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("photos");
+    let snap_dir = target.join(".snapshots");
+    fs::create_dir_all(&snap_dir).unwrap();
+    for day in 1..=10 {
+        fs::create_dir_all(snap_dir.join(format!("daily-202609{day:02}"))).unwrap();
+    }
+    fs::write(snap_dir.join("daily-20260920"), b"not a subvolume").unwrap();
+    let config_path = dir.path().join("bonsai.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+            [[target]]
+            path = "{}"
+            retention = {{ daily = 7 }}
+            "#,
+            target.display()
+        ),
+    )
+    .unwrap();
+    let config = Config::load(&config_path).unwrap();
+    let mock = MockBcachefs::new();
+    app::snapshot_with(&mock, &config, date(2026, 9, 10), false, &[]).unwrap();
+
+    assert_eq!(
+        deleted_snapshots(&mock.calls()),
+        vec!["daily-20260901", "daily-20260902", "daily-20260903"],
+        "only the three oldest directories should be pruned, never the file"
+    );
+}
+
+#[test]
+fn create_failure_does_not_abort_remaining_targets() {
+    // The create for target `a` fails; target `b` must still be processed,
+    // and the run must surface a single aggregated error.
+    let dir = tempfile::tempdir().unwrap();
+    let target_a = dir.path().join("a");
+    let target_b = dir.path().join("b");
+    for target in [&target_a, &target_b] {
+        fs::create_dir_all(target.join(".snapshots")).unwrap();
+    }
+    let config_path = dir.path().join("bonsai.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+            [[target]]
+            path = "{}"
+            retention = {{ daily = 7 }}
+            [[target]]
+            path = "{}"
+            retention = {{ daily = 7 }}
+            "#,
+            target_a.display(),
+            target_b.display()
+        ),
+    )
+    .unwrap();
+    let config = Config::load(&config_path).unwrap();
+    let mock = MockBcachefs::new();
+    mock.fail_next_snapshots(1);
+    let result = app::snapshot_with(&mock, &config, date(2026, 9, 10), false, &[]);
+    assert!(result.is_err(), "partial create failure must surface");
+
+    let processed: std::collections::HashSet<_> = mock
+        .calls()
+        .iter()
+        .filter(|c| matches!(c, Call::Snapshot { .. }))
+        .filter_map(target_of)
+        .collect();
+    assert!(
+        processed.contains(&target_b),
+        "target b must still be processed, got {processed:?}"
+    );
+
+    let message = format!("{:#}", result.unwrap_err());
+    assert!(
+        message.contains("1 operation(s) failed"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        message.contains(target_a.file_name().unwrap().to_string_lossy().as_ref()),
+        "error should name the failed target: {message}"
     );
 }
 

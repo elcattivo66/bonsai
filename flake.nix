@@ -34,7 +34,8 @@
         {
           packages.default = pkgs.rustPlatform.buildRustPackage {
             pname = "bonsai";
-            version = "0.1.0";
+            # Keep in sync with Cargo.toml automatically.
+            version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
             src = self;
             cargoLock.lockFile = ./Cargo.lock;
 

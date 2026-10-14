@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -86,6 +86,27 @@ impl Config {
         if self.snapshot_subdir.is_empty() {
             anyhow::bail!("snapshot_subdir must not be empty");
         }
+        // The subdir is joined onto each target path; an absolute path would
+        // silently discard the target (`Path::join` semantics) and `..` would
+        // escape above it.
+        let subdir = Path::new(&self.snapshot_subdir);
+        if subdir.is_absolute() {
+            anyhow::bail!("snapshot_subdir must be relative: {subdir:?}");
+        }
+        let mut has_component = false;
+        for component in subdir.components() {
+            match component {
+                Component::ParentDir => {
+                    anyhow::bail!("snapshot_subdir must not contain '..': {subdir:?}");
+                }
+                Component::Normal(_) => has_component = true,
+                _ => {}
+            }
+        }
+        if !has_component {
+            anyhow::bail!("snapshot_subdir must name a subdirectory: {subdir:?}");
+        }
+
         let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
         for target in &self.targets {
             if target.path.as_os_str().is_empty() {
@@ -119,8 +140,7 @@ impl Config {
 /// `..` lexically. Does not follow symlinks (that would require the path to
 /// exist on disk).
 fn normalize_path(path: &Path) -> PathBuf {
-    use std::path::{Component, PathBuf as PB};
-    let mut out = PB::new();
+    let mut out = PathBuf::new();
     for component in path.components() {
         match component {
             Component::CurDir => {}
@@ -133,7 +153,7 @@ fn normalize_path(path: &Path) -> PathBuf {
         }
     }
     if out.as_os_str().is_empty() {
-        PB::from(".")
+        PathBuf::from(".")
     } else {
         out
     }
@@ -260,5 +280,66 @@ mod tests {
 
         let only = vec![PathBuf::from("/spool/other/")];
         assert!(cfg.selected(&only).is_empty());
+    }
+
+    #[test]
+    fn rejects_absolute_snapshot_subdir() {
+        // Path::join would discard the target path entirely.
+        let err = Config::parse(
+            r#"
+            snapshot_subdir = "/evil"
+            [[target]]
+            path = "/spool/x"
+            "#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("relative"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_parent_components_in_snapshot_subdir() {
+        let err = Config::parse(
+            r#"
+            snapshot_subdir = "../snapshots"
+            [[target]]
+            path = "/spool/x"
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("'..'"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn rejects_snapshot_subdir_without_components() {
+        for subdir in [".", "./"] {
+            let err = Config::parse(&format!(
+                r#"
+                snapshot_subdir = "{subdir}"
+                [[target]]
+                path = "/spool/x"
+                "#
+            ))
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("must name a subdirectory"),
+                "unexpected error for {subdir:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_nested_snapshot_subdir() {
+        let cfg = Config::parse(
+            r#"
+            snapshot_subdir = ".snapshots/deep"
+            [[target]]
+            path = "/spool/x"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.snapshot_subdir, ".snapshots/deep");
     }
 }

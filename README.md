@@ -19,10 +19,20 @@ On each run, for every configured target:
    - `yearly` — on January 1st.
 2. **Prune** each tier down to the configured keep-count, keeping the newest.
 
+A retention of `0` disables that tier: no new snapshots are created for it,
+but any existing snapshots of that tier are still pruned.
+
 Snapshots are named `<tier>-YYYYMMDD` and stored under
-`<target>/<snapshot_subdir>/` (default `.snapshots`). They are read-only
-subvolumes; browse with `ls`, restore with `cp -a` (or
+`<target>/<snapshot_subdir>/` (default `.snapshots`). They are created
+read-only (`bcachefs subvolume snapshot -r`), so an accidental write cannot
+modify history; browse with `ls`, restore with `cp -a` (or
 `cp --reflink=auto` for copy-on-write clones within the same filesystem).
+
+Failures are isolated per target: a target whose snapshots cannot be read,
+created or deleted does not stop the remaining targets — but the run exits
+non-zero if anything failed. Overlapping runs are prevented by a lock at
+`/var/lock/bonsai.lock`; a second run started while one is in progress
+exits successfully without doing anything.
 
 ## Configuration
 
@@ -40,7 +50,7 @@ retention = { daily = 7, weekly = 4, monthly = 6, yearly = 1 }
 
 ```sh
 # Preview what the daily run would do.
-bonsai --config config.toml --dry-run snapshot
+bonsai --config config.toml snapshot --dry-run
 
 # Create snapshots and prune.
 bonsai --config config.toml snapshot

@@ -93,6 +93,7 @@ name = "bonsai"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bonsai",
  "chrono",
  "clap",
  "fs2",

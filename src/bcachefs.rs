@@ -1,5 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(test, feature = "test-util"))]
+use std::path::PathBuf;
 use std::process::Command;
+#[cfg(any(test, feature = "test-util"))]
 use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::Duration;
@@ -39,11 +42,12 @@ impl Default for RealBcachefs {
 }
 
 impl RealBcachefs {
-    /// `bcachefs subvolume snapshot <source> <dest>`.
+    /// `bcachefs subvolume snapshot -r <source> <dest>` — read-only, so an
+    /// accidental write cannot modify history.
     fn snapshot_command(source: &Path, dest: &Path) -> Command {
         let mut command = Command::new("bcachefs");
         command
-            .args(["subvolume", "snapshot"])
+            .args(["subvolume", "snapshot", "-r"])
             .arg(source)
             .arg(dest);
         command
@@ -66,6 +70,11 @@ impl Bcachefs for RealBcachefs {
             match run(Self::snapshot_command(source, dest)) {
                 Ok(()) => return Ok(()),
                 Err(err) => {
+                    // A missing or unrunnable binary will not fix itself
+                    // within the retry window; fail fast instead of sleeping.
+                    if is_not_retryable(&err) {
+                        return Err(err);
+                    }
                     last_err = Some(err);
                     if attempt < attempts {
                         warn!(
@@ -117,7 +126,23 @@ fn describe(command: &Command) -> String {
     }
 }
 
+/// Whether a failure is permanent in the current environment (the `bcachefs`
+/// binary is missing or not executable) and retrying cannot help.
+fn is_not_retryable(error: &anyhow::Error) -> bool {
+    use std::io::ErrorKind;
+    error
+        .root_cause()
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|cause| {
+            matches!(
+                cause.kind(),
+                ErrorKind::NotFound | ErrorKind::PermissionDenied
+            )
+        })
+}
+
 /// A recorded call on a [`MockBcachefs`].
+#[cfg(any(test, feature = "test-util"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Call {
     Snapshot { source: PathBuf, dest: PathBuf },
@@ -125,6 +150,10 @@ pub enum Call {
 }
 
 /// In-memory [`Bcachefs`] that records calls instead of touching the disk.
+///
+/// Only compiled for tests (and behind the `test-util` feature for
+/// integration tests), so it never ships in release binaries.
+#[cfg(any(test, feature = "test-util"))]
 #[derive(Debug, Default)]
 pub struct MockBcachefs {
     calls: Mutex<Vec<Call>>,
@@ -132,13 +161,15 @@ pub struct MockBcachefs {
     fail_deletes: Mutex<u32>,
 }
 
+#[cfg(any(test, feature = "test-util"))]
 impl MockBcachefs {
     /// Create an empty mock.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Make the next `n` snapshot calls fail, exercising retry paths.
+    /// Make the next `n` snapshot calls fail. The attempts are still recorded
+    /// in [`Self::calls`] so tests can verify what was attempted.
     pub fn fail_next_snapshots(&self, n: u32) {
         *self.fail_snapshots.lock().unwrap() = n;
     }
@@ -155,6 +186,7 @@ impl MockBcachefs {
     }
 }
 
+#[cfg(any(test, feature = "test-util"))]
 impl Bcachefs for MockBcachefs {
     fn snapshot(&self, source: &Path, dest: &Path) -> Result<()> {
         self.calls.lock().unwrap().push(Call::Snapshot {
@@ -194,11 +226,11 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_passes_source_and_dest() {
+    fn snapshot_is_read_only_with_source_and_dest() {
         let command = RealBcachefs::snapshot_command(Path::new("/a"), Path::new("/a/.snapshots/x"));
         assert_eq!(
             args(&command),
-            ["subvolume", "snapshot", "/a", "/a/.snapshots/x"]
+            ["subvolume", "snapshot", "-r", "/a", "/a/.snapshots/x"]
         );
     }
 
@@ -209,5 +241,15 @@ mod tests {
             args(&command),
             ["subvolume", "delete", "/a/.snapshots/daily-20260101"]
         );
+    }
+
+    #[test]
+    fn missing_binary_is_not_retryable() {
+        let err = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::NotFound))
+            .context("running bcachefs subvolume snapshot");
+        assert!(is_not_retryable(&err));
+
+        let err = anyhow::anyhow!("bcachefs subvolume snapshot failed: busy");
+        assert!(!is_not_retryable(&err));
     }
 }

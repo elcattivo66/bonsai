@@ -34,6 +34,11 @@ pub fn snapshot(config: &Config, dry_run: bool, only: &[PathBuf]) -> Result<()> 
 }
 
 /// Snapshot cycle with an injected filesystem backend and clock (for tests).
+///
+/// Failures are collected instead of being fatal: a target whose snapshots
+/// cannot be read or created, or whose deletes fail, does not stop the
+/// remaining targets. If anything failed, a single aggregated error is
+/// returned (and the process exits non-zero).
 pub fn snapshot_with<B: Bcachefs>(
     bcachefs: &B,
     config: &Config,
@@ -41,7 +46,7 @@ pub fn snapshot_with<B: Bcachefs>(
     dry_run: bool,
     only: &[PathBuf],
 ) -> Result<()> {
-    let mut delete_errors: Vec<anyhow::Error> = Vec::new();
+    let mut failures: Vec<anyhow::Error> = Vec::new();
 
     for target in config.selected(only) {
         if !target.path.is_dir() {
@@ -50,24 +55,17 @@ pub fn snapshot_with<B: Bcachefs>(
         }
 
         let dir = Snapshot::dir_for(&target.path, &config.snapshot_subdir);
-        let existing = read_snapshots(&dir)?;
-        let plan = policy::plan(now, &dir, &existing, target.retention);
-
-        info!(
-            path = %target.path.display(),
-            create = plan.create.len(),
-            prune = plan.prune.len(),
-            "planned"
-        );
-
-        apply_target(bcachefs, target, &plan, dry_run, &mut delete_errors)?;
+        match process_target(bcachefs, target, &dir, now, dry_run, &mut failures) {
+            Ok(()) => {}
+            Err(error) => failures.push(error.context(target.path.display().to_string())),
+        }
     }
 
-    if !delete_errors.is_empty() {
-        let n = delete_errors.len();
-        let messages: Vec<String> = delete_errors.iter().map(|e| format!("{e:#}")).collect();
+    if !failures.is_empty() {
+        let n = failures.len();
+        let messages: Vec<String> = failures.iter().map(|e| format!("{e:#}")).collect();
         return Err(anyhow::anyhow!(
-            "{n} delete(s) failed:\n{}",
+            "{n} operation(s) failed:\n{}",
             messages.join("\n")
         ));
     }
@@ -75,13 +73,29 @@ pub fn snapshot_with<B: Bcachefs>(
     Ok(())
 }
 
-fn apply_target<B: Bcachefs>(
+/// Read, plan and apply the work for a single target.
+///
+/// Delete failures are collected into `failures` and do not abort the target;
+/// snapshot-create failures abort this target (and are reported by the
+/// caller) but not the remaining targets.
+fn process_target<B: Bcachefs>(
     bcachefs: &B,
     target: &Target,
-    plan: &policy::Plan,
+    dir: &Path,
+    now: NaiveDate,
     dry_run: bool,
-    delete_errors: &mut Vec<anyhow::Error>,
+    failures: &mut Vec<anyhow::Error>,
 ) -> Result<()> {
+    let existing = read_snapshots(dir)?;
+    let plan = policy::plan(now, dir, &existing, target.retention);
+
+    info!(
+        path = %target.path.display(),
+        create = plan.create.len(),
+        prune = plan.prune.len(),
+        "planned"
+    );
+
     for snap in &plan.create {
         if dry_run {
             info!(path = %snap.path.display(), "would create");
@@ -106,10 +120,7 @@ fn apply_target<B: Bcachefs>(
         }
         match bcachefs.delete(&snap.path) {
             Ok(()) => info!(path = %snap.path.display(), "pruned"),
-            Err(error) => {
-                warn!(path = %snap.path.display(), error = %error, "prune failed, continuing");
-                delete_errors.push(error.context(snap.path.display().to_string()));
-            }
+            Err(error) => failures.push(error.context(snap.path.display().to_string())),
         }
     }
 
@@ -145,9 +156,20 @@ pub fn read_snapshots(dir: &Path) -> Result<Vec<Snapshot>> {
             warn!(path = ?entry.path(), "skipping non-UTF-8 directory entry");
             continue;
         };
-        if let Some(snapshot) = Snapshot::parse_entry(dir, name) {
-            snapshots.push(snapshot);
+        let Some(snapshot) = Snapshot::parse_entry(dir, name) else {
+            continue;
+        };
+        // Only directories are ever snapshots (the shell script checked
+        // `[[ -d ]]`); a regular file with a snapshot-like name is reported
+        // and ignored instead of being planned for deletion.
+        let is_dir = std::fs::metadata(entry.path())
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false);
+        if !is_dir {
+            warn!(path = %entry.path().display(), "snapshot-like entry is not a directory, ignoring");
+            continue;
         }
+        snapshots.push(snapshot);
     }
     Ok(snapshots)
 }
