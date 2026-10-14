@@ -8,7 +8,7 @@ use crate::snapshot::{Snapshot, Tier};
 /// The work computed for a single target: snapshots to create and to prune.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Plan {
-    /// Snapshots to create, newest tier first.
+    /// Snapshots to create, sorted by file name (ascending) for determinism.
     pub create: Vec<Snapshot>,
     /// Existing snapshots that fall outside the retention window.
     pub prune: Vec<Snapshot>,

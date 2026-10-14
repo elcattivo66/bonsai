@@ -13,6 +13,7 @@ default-run = "bonsai"
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
+fs2 = "0.4"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 toml = "0.8"

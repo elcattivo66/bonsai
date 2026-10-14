@@ -129,6 +129,7 @@ pub enum Call {
 pub struct MockBcachefs {
     calls: Mutex<Vec<Call>>,
     fail_snapshots: Mutex<u32>,
+    fail_deletes: Mutex<u32>,
 }
 
 impl MockBcachefs {
@@ -142,6 +143,12 @@ impl MockBcachefs {
         *self.fail_snapshots.lock().unwrap() = n;
     }
 
+    /// Make the next `n` delete calls fail. Deletions are still recorded in
+    /// [`Self::calls`] so tests can verify the run continued past the failure.
+    pub fn fail_next_deletes(&self, n: u32) {
+        *self.fail_deletes.lock().unwrap() = n;
+    }
+
     /// Snapshot of all recorded calls.
     pub fn calls(&self) -> Vec<Call> {
         self.calls.lock().unwrap().clone()
@@ -150,16 +157,15 @@ impl MockBcachefs {
 
 impl Bcachefs for MockBcachefs {
     fn snapshot(&self, source: &Path, dest: &Path) -> Result<()> {
+        self.calls.lock().unwrap().push(Call::Snapshot {
+            source: source.to_path_buf(),
+            dest: dest.to_path_buf(),
+        });
         let mut remaining = self.fail_snapshots.lock().unwrap();
         if *remaining > 0 {
             *remaining -= 1;
             bail!("mock snapshot failure");
         }
-        drop(remaining);
-        self.calls.lock().unwrap().push(Call::Snapshot {
-            source: source.to_path_buf(),
-            dest: dest.to_path_buf(),
-        });
         Ok(())
     }
 
@@ -167,6 +173,11 @@ impl Bcachefs for MockBcachefs {
         self.calls.lock().unwrap().push(Call::Delete {
             path: path.to_path_buf(),
         });
+        let mut remaining = self.fail_deletes.lock().unwrap();
+        if *remaining > 0 {
+            *remaining -= 1;
+            bail!("mock delete failure");
+        }
         Ok(())
     }
 }

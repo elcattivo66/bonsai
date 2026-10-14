@@ -1,10 +1,8 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 /// A retention tier in the grandfather-father-son scheme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -37,20 +35,6 @@ impl fmt::Display for Tier {
     }
 }
 
-impl FromStr for Tier {
-    type Err = ParseSnapshotError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "daily" => Ok(Tier::Daily),
-            "weekly" => Ok(Tier::Weekly),
-            "monthly" => Ok(Tier::Monthly),
-            "yearly" => Ok(Tier::Yearly),
-            other => Err(ParseSnapshotError::UnknownTier(other.to_owned())),
-        }
-    }
-}
-
 /// A single read-only snapshot subvolume.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
@@ -72,25 +56,23 @@ impl Snapshot {
         Snapshot { tier, date, path }
     }
 
-    /// Parse a snapshot directory entry. Returns `Ok(None)` for names that do
-    /// not look like snapshots (so listing can skip foreign files).
-    pub fn parse_entry(dir: &Path, name: &str) -> Result<Option<Self>, ParseSnapshotError> {
-        let Some((tier_str, date_str)) = name.split_once('-') else {
-            return Ok(None);
+    /// Parse a snapshot directory entry. Returns `None` for names that do not
+    /// look like snapshots (so listing can skip foreign files).
+    pub fn parse_entry(dir: &Path, name: &str) -> Option<Self> {
+        let (tier_str, date_str) = name.split_once('-')?;
+        let tier = match tier_str {
+            "daily" => Tier::Daily,
+            "weekly" => Tier::Weekly,
+            "monthly" => Tier::Monthly,
+            "yearly" => Tier::Yearly,
+            _ => return None,
         };
-        let tier = match Tier::from_str(tier_str) {
-            Ok(tier) => tier,
-            // The only parse error is an unknown tier -> treat as foreign.
-            Err(_) => return Ok(None),
-        };
-        let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y%m%d") else {
-            return Ok(None);
-        };
-        Ok(Some(Snapshot {
+        let date = NaiveDate::parse_from_str(date_str, "%Y%m%d").ok()?;
+        Some(Snapshot {
             tier,
             date,
             path: dir.join(name),
-        }))
+        })
     }
 
     /// The snapshot's file name (last path component).
@@ -102,13 +84,6 @@ impl Snapshot {
     pub fn dir_for(target: &Path, subdir: &str) -> PathBuf {
         target.join(subdir)
     }
-}
-
-/// Errors raised while parsing snapshot names.
-#[derive(Debug, Error)]
-pub enum ParseSnapshotError {
-    #[error("unknown snapshot tier: {0}")]
-    UnknownTier(String),
 }
 
 #[cfg(test)]
@@ -125,19 +100,15 @@ mod tests {
         let snap = Snapshot::new(Tier::Daily, date(2026, 1, 5), dir);
         assert_eq!(snap.file_name(), "daily-20260105");
 
-        let parsed = Snapshot::parse_entry(dir, "daily-20260105")
-            .unwrap()
-            .unwrap();
+        let parsed = Snapshot::parse_entry(dir, "daily-20260105").unwrap();
         assert_eq!(parsed, snap);
     }
 
     #[test]
     fn ignores_foreign_entries() {
         let dir = Path::new("/spool/x/.snapshots");
-        assert!(Snapshot::parse_entry(dir, "lost+found").unwrap().is_none());
-        assert!(Snapshot::parse_entry(dir, "daily-notadate")
-            .unwrap()
-            .is_none());
-        assert!(Snapshot::parse_entry(dir, "weekly").unwrap().is_none());
+        assert!(Snapshot::parse_entry(dir, "lost+found").is_none());
+        assert!(Snapshot::parse_entry(dir, "daily-notadate").is_none());
+        assert!(Snapshot::parse_entry(dir, "weekly").is_none());
     }
 }
