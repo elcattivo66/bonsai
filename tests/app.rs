@@ -6,10 +6,13 @@ use std::path::Path;
 use bonsai::app;
 use bonsai::bcachefs::{Call, MockBcachefs};
 use bonsai::config::Config;
-use chrono::NaiveDate;
+use chrono::NaiveDateTime;
 
-fn date(year: i32, month: u32, day: u32) -> NaiveDate {
-    NaiveDate::from_ymd_opt(year, month, day).unwrap()
+fn dt(year: i32, month: u32, day: u32) -> NaiveDateTime {
+    NaiveDateTime::new(
+        chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap(),
+        chrono::NaiveTime::MIN,
+    )
 }
 
 /// Set up a temp target with snapshots for days 1..=10 and a matching TOML
@@ -78,7 +81,7 @@ fn prunes_excess_when_today_already_exists() {
     // Day 10 is already present, so no create is needed; 10 - keep 7 = 3 prunes.
     let (_dir, config) = setup_with_snapshots(".snapshots", 7);
     let mock = MockBcachefs::new();
-    app::snapshot_with(&mock, &config, date(2026, 9, 10), false, &[]).unwrap();
+    app::snapshot_with(&mock, &config, dt(2026, 9, 10), false, &[]).unwrap();
 
     assert!(created_snapshots(&mock.calls()).is_empty());
     assert_eq!(
@@ -94,7 +97,7 @@ fn creates_when_missing_and_prunes_rest() {
     // (keep 7 + new 1 = 11, prune 01..04).
     let (_dir, config) = setup_with_snapshots(".snapshots", 7);
     let mock = MockBcachefs::new();
-    app::snapshot_with(&mock, &config, date(2026, 9, 11), false, &[]).unwrap();
+    app::snapshot_with(&mock, &config, dt(2026, 9, 11), false, &[]).unwrap();
 
     assert_eq!(created_snapshots(&mock.calls()), vec!["daily-20260911"]);
     assert_eq!(
@@ -113,7 +116,7 @@ fn creates_when_missing_and_prunes_rest() {
 fn dry_run_makes_no_calls() {
     let (_dir, config) = setup_with_snapshots(".snapshots", 7);
     let mock = MockBcachefs::new();
-    app::snapshot_with(&mock, &config, date(2026, 9, 11), true, &[]).unwrap();
+    app::snapshot_with(&mock, &config, dt(2026, 9, 11), true, &[]).unwrap();
     assert!(
         mock.calls().is_empty(),
         "dry-run must not touch the backend"
@@ -138,7 +141,7 @@ fn nonexistent_target_is_skipped() {
     .unwrap();
     let config = Config::load(&config_path).unwrap();
     let mock = MockBcachefs::new();
-    app::snapshot_with(&mock, &config, date(2026, 9, 10), false, &[]).unwrap();
+    app::snapshot_with(&mock, &config, dt(2026, 9, 10), false, &[]).unwrap();
     assert!(mock.calls().is_empty());
 }
 
@@ -150,7 +153,7 @@ fn delete_failures_continue_and_surface_as_error() {
     let (_dir, config) = setup_with_snapshots(".snapshots", 7);
     let mock = MockBcachefs::new();
     mock.fail_next_deletes(2);
-    let result = app::snapshot_with(&mock, &config, date(2026, 9, 10), false, &[]);
+    let result = app::snapshot_with(&mock, &config, dt(2026, 9, 10), false, &[]);
     assert!(result.is_err(), "partial delete failure must surface");
 
     assert_eq!(deleted_snapshots(&mock.calls()).len(), 3);
@@ -188,7 +191,7 @@ fn snapshot_named_regular_files_are_ignored() {
     .unwrap();
     let config = Config::load(&config_path).unwrap();
     let mock = MockBcachefs::new();
-    app::snapshot_with(&mock, &config, date(2026, 9, 10), false, &[]).unwrap();
+    app::snapshot_with(&mock, &config, dt(2026, 9, 10), false, &[]).unwrap();
 
     assert_eq!(
         deleted_snapshots(&mock.calls()),
@@ -227,7 +230,7 @@ fn create_failure_does_not_abort_remaining_targets() {
     let config = Config::load(&config_path).unwrap();
     let mock = MockBcachefs::new();
     mock.fail_next_snapshots(1);
-    let result = app::snapshot_with(&mock, &config, date(2026, 9, 10), false, &[]);
+    let result = app::snapshot_with(&mock, &config, dt(2026, 9, 10), false, &[]);
     assert!(result.is_err(), "partial create failure must surface");
 
     let processed: std::collections::HashSet<_> = mock
@@ -286,7 +289,7 @@ fn only_filter_restricts_to_named_targets() {
     app::snapshot_with(
         &mock,
         &config,
-        date(2026, 9, 10),
+        dt(2026, 9, 10),
         false,
         std::slice::from_ref(&target_a),
     )

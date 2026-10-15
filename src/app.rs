@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use chrono::NaiveDate;
+use chrono::NaiveDateTime;
 use tracing::{info, warn};
 
 use crate::bcachefs::{Bcachefs, RealBcachefs};
@@ -29,7 +29,7 @@ pub fn snapshot(config: &Config, dry_run: bool, only: &[PathBuf]) -> Result<()> 
     };
 
     let bcachefs = RealBcachefs::default();
-    let now = chrono::Utc::now().date_naive();
+    let now = chrono::Utc::now().naive_utc();
     snapshot_with(&bcachefs, config, now, dry_run, only)
 }
 
@@ -42,7 +42,7 @@ pub fn snapshot(config: &Config, dry_run: bool, only: &[PathBuf]) -> Result<()> 
 pub fn snapshot_with<B: Bcachefs>(
     bcachefs: &B,
     config: &Config,
-    now: NaiveDate,
+    now: NaiveDateTime,
     dry_run: bool,
     only: &[PathBuf],
 ) -> Result<()> {
@@ -82,7 +82,7 @@ fn process_target<B: Bcachefs>(
     bcachefs: &B,
     target: &Target,
     dir: &Path,
-    now: NaiveDate,
+    now: NaiveDateTime,
     dry_run: bool,
     failures: &mut Vec<anyhow::Error>,
 ) -> Result<()> {
