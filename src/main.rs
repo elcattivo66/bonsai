@@ -32,12 +32,20 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
 
+        /// Print the plan as JSON (only with --dry-run).
+        #[arg(long)]
+        json: bool,
+
         /// Restrict to these target paths (default: all configured targets).
         #[arg(value_name = "TARGET")]
         targets: Vec<PathBuf>,
     },
     /// List existing snapshots.
     List {
+        /// Print as JSON.
+        #[arg(long)]
+        json: bool,
+
         /// Restrict to these target paths (default: all configured targets).
         #[arg(value_name = "TARGET")]
         targets: Vec<PathBuf>,
@@ -50,7 +58,11 @@ fn main() -> Result<()> {
     let config = Config::load(&cli.config)?;
 
     match cli.command {
-        Command::Snapshot { dry_run, targets } => app::snapshot(&config, dry_run, &targets),
-        Command::List { targets } => app::list(&config, &targets),
+        Command::Snapshot {
+            dry_run,
+            json,
+            targets,
+        } => app::snapshot(&config, dry_run, &targets, json),
+        Command::List { json, targets } => app::list(&config, &targets, json),
     }
 }

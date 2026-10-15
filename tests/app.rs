@@ -307,3 +307,37 @@ fn only_filter_restricts_to_named_targets() {
         "processed target should be `a`, got {processed:?}"
     );
 }
+
+#[test]
+fn plan_report_reflects_prune_plan() {
+    let (_dir, config) = setup_with_snapshots(".snapshots", 7);
+    let report = app::plan_report(&config, &[], dt(2026, 9, 10)).unwrap();
+    assert_eq!(report.targets.len(), 1);
+    let target = &report.targets[0];
+    assert!(target.create.is_empty());
+    assert_eq!(
+        target
+            .prune
+            .iter()
+            .map(|s| s.name.clone())
+            .collect::<Vec<_>>(),
+        vec!["daily-20260901", "daily-20260902", "daily-20260903"]
+    );
+
+    let value = serde_json::to_value(&report).unwrap();
+    assert!(value["targets"][0]["prune"][0]["name"].is_string());
+    assert!(value["targets"][0]["prune"][0]["tier"].is_string());
+    assert!(value["targets"][0]["prune"][0]["time"].is_string());
+}
+
+#[test]
+fn list_report_is_newest_first() {
+    let (_dir, config) = setup_with_snapshots(".snapshots", 7);
+    let report = app::list_report(&config, &[]).unwrap();
+    let target = &report.targets[0];
+    assert_eq!(target.snapshots.len(), 10);
+    assert_eq!(target.snapshots[0].name, "daily-20260910");
+
+    let value = serde_json::to_value(&report).unwrap();
+    assert!(value["targets"][0]["snapshots"].is_array());
+}

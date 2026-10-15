@@ -70,6 +70,10 @@ bonsai --config config.toml list
 
 # Restrict to a single target.
 bonsai --config config.toml snapshot /spool/photos
+
+# Machine-readable output (JSON on stdout, logs stay on stderr).
+bonsai --config config.toml list --json
+bonsai --config config.toml snapshot --dry-run --json
 ```
 
 ## Build

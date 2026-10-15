@@ -3,20 +3,26 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use chrono_tz::Tz;
+use serde::Serialize;
 use tracing::{info, warn};
 
 use crate::bcachefs::{Bcachefs, RealBcachefs};
 use crate::config::{Config, Target};
 use crate::lock;
 use crate::policy;
-use crate::snapshot::Snapshot;
+use crate::snapshot::{Snapshot, Tier};
 
 /// Run the snapshot + prune cycle across the configured targets.
 ///
 /// Acquires an exclusive, non-blocking lock so that overlapping runs (e.g. a
 /// slow retry loop racing the next timer fire) cannot prune each other's
-/// freshly-created snapshots.
-pub fn snapshot(config: &Config, dry_run: bool, only: &[PathBuf]) -> Result<()> {
+/// freshly-created snapshots. With `json` (only valid together with `dry_run`)
+/// the plan is printed as JSON instead of being applied.
+pub fn snapshot(config: &Config, dry_run: bool, only: &[PathBuf], json: bool) -> Result<()> {
+    if json && !dry_run {
+        anyhow::bail!("--json is only supported together with --dry-run");
+    }
+
     let _lock = match lock::try_acquire(Path::new(lock::DEFAULT_LOCK_PATH)) {
         Ok(Some(guard)) => Some(guard),
         Ok(None) => {
@@ -29,8 +35,15 @@ pub fn snapshot(config: &Config, dry_run: bool, only: &[PathBuf]) -> Result<()> 
         }
     };
 
-    let bcachefs = RealBcachefs::default();
     let now = local_datetime(config.tz(), Utc::now());
+
+    if json {
+        let report = plan_report(config, only, now)?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
+    let bcachefs = RealBcachefs::default();
     snapshot_with(&bcachefs, config, now, dry_run, only)
 }
 
@@ -135,17 +148,100 @@ fn process_target<B: Bcachefs>(
 }
 
 /// List the snapshots present for each selected target.
-pub fn list(config: &Config, only: &[PathBuf]) -> Result<()> {
-    for target in config.selected(only) {
-        println!("{}:", target.path.display());
-        let dir = Snapshot::dir_for(&target.path, &config.snapshot_subdir);
-        let mut snapshots = read_snapshots(&dir)?;
-        snapshots.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
-        for snap in snapshots {
-            println!("  {}", snap.file_name());
+pub fn list(config: &Config, only: &[PathBuf], json: bool) -> Result<()> {
+    let report = list_report(config, only)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    for target in &report.targets {
+        println!("{}:", target.path);
+        for snapshot in &target.snapshots {
+            println!("  {}", snapshot.name);
         }
     }
     Ok(())
+}
+
+/// Serializable summary of a snapshot, used for `--json` output.
+#[derive(Debug, Serialize)]
+pub struct SnapshotInfo {
+    pub tier: Tier,
+    pub time: NaiveDateTime,
+    pub name: String,
+    pub path: PathBuf,
+}
+
+impl From<&Snapshot> for SnapshotInfo {
+    fn from(snapshot: &Snapshot) -> Self {
+        SnapshotInfo {
+            tier: snapshot.tier,
+            time: snapshot.datetime,
+            name: snapshot.file_name(),
+            path: snapshot.path.clone(),
+        }
+    }
+}
+
+/// `--json` output of `list`.
+#[derive(Debug, Serialize)]
+pub struct ListReport {
+    pub targets: Vec<TargetSnapshots>,
+}
+
+/// Snapshots of a single target (newest first).
+#[derive(Debug, Serialize)]
+pub struct TargetSnapshots {
+    pub path: String,
+    pub snapshots: Vec<SnapshotInfo>,
+}
+
+/// `--json` output of `snapshot --dry-run`.
+#[derive(Debug, Serialize)]
+pub struct PlanReport {
+    pub targets: Vec<TargetPlan>,
+}
+
+/// Planned work for a single target.
+#[derive(Debug, Serialize)]
+pub struct TargetPlan {
+    pub path: String,
+    pub create: Vec<SnapshotInfo>,
+    pub prune: Vec<SnapshotInfo>,
+}
+
+/// Build the `list` report (newest first per target), newest first.
+pub fn list_report(config: &Config, only: &[PathBuf]) -> Result<ListReport> {
+    let mut targets = Vec::new();
+    for target in config.selected(only) {
+        let dir = Snapshot::dir_for(&target.path, &config.snapshot_subdir);
+        let mut snapshots = read_snapshots(&dir)?;
+        snapshots.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
+        targets.push(TargetSnapshots {
+            path: target.path.display().to_string(),
+            snapshots: snapshots.iter().map(SnapshotInfo::from).collect(),
+        });
+    }
+    Ok(ListReport { targets })
+}
+
+/// Build the dry-run plan report without touching the filesystem.
+pub fn plan_report(config: &Config, only: &[PathBuf], now: NaiveDateTime) -> Result<PlanReport> {
+    let mut targets = Vec::new();
+    for target in config.selected(only) {
+        if !target.path.is_dir() {
+            continue;
+        }
+        let dir = Snapshot::dir_for(&target.path, &config.snapshot_subdir);
+        let existing = read_snapshots(&dir)?;
+        let plan = policy::plan(now, &dir, &existing, target.retention);
+        targets.push(TargetPlan {
+            path: target.path.display().to_string(),
+            create: plan.create.iter().map(SnapshotInfo::from).collect(),
+            prune: plan.prune.iter().map(SnapshotInfo::from).collect(),
+        });
+    }
+    Ok(PlanReport { targets })
 }
 
 /// Read and parse snapshot entries from a directory, skipping foreign files.
