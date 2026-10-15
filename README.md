@@ -88,6 +88,10 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
+## Roadmap
+
+See [ROADMAP.md](ROADMAP.md).
+
 ## License
 
 Licensed under the [GNU Affero General Public License v3.0](LICENSE)
