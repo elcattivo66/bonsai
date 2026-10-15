@@ -64,6 +64,24 @@ enum Command {
         #[arg(value_name = "NAME", required = true)]
         names: Vec<String>,
     },
+    /// Restore a file or subtree from a snapshot into a destination.
+    Restore {
+        /// Target path (must be configured).
+        #[arg(value_name = "TARGET")]
+        target: PathBuf,
+
+        /// Snapshot name, e.g. daily-20260101.
+        #[arg(value_name = "NAME")]
+        name: String,
+
+        /// Path inside the snapshot to restore (default: the whole snapshot).
+        #[arg(long, value_name = "SUBPATH")]
+        path: Option<PathBuf>,
+
+        /// Destination to copy into (required; nothing is overwritten in place).
+        #[arg(long, value_name = "DEST", required = true)]
+        to: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -83,5 +101,11 @@ fn main() -> Result<()> {
             target,
             names,
         } => app::delete(&config, &target, &names, dry_run),
+        Command::Restore {
+            target,
+            name,
+            path,
+            to,
+        } => app::restore(&config, &target, &name, path.as_deref(), &to),
     }
 }

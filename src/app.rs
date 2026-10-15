@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -10,6 +10,7 @@ use crate::bcachefs::{Bcachefs, RealBcachefs};
 use crate::config::{Config, Target};
 use crate::lock;
 use crate::policy;
+use crate::restore::{Restore, RsyncRestore};
 use crate::snapshot::{Snapshot, Tier};
 
 /// Outcome of trying to take the run lock.
@@ -359,6 +360,79 @@ fn confirm() -> Result<bool> {
     }
     let answer = input.trim().to_ascii_lowercase();
     Ok(answer == "y" || answer == "yes")
+}
+
+/// Resolve the source path inside a snapshot to restore from.
+///
+/// The target must be configured and `name` must be a snapshot of it. An
+/// optional `subpath` selects a file or subtree inside the snapshot and must be
+/// relative and free of `..`.
+pub fn resolve_restore_source(
+    config: &Config,
+    target: &Path,
+    name: &str,
+    subpath: Option<&Path>,
+) -> Result<PathBuf> {
+    let target_buf = target.to_path_buf();
+    let selected = config.selected(std::slice::from_ref(&target_buf));
+    let Some(target) = selected.first() else {
+        anyhow::bail!("target not in config: {}", target_buf.display());
+    };
+    let dir = Snapshot::dir_for(&target.path, &config.snapshot_subdir);
+    let snapshot = Snapshot::parse_entry(&dir, name)
+        .ok_or_else(|| anyhow::anyhow!("not a snapshot name: {name}"))?;
+    if snapshot.path.parent() != Some(dir.as_path()) {
+        anyhow::bail!(
+            "refusing to restore {}: not inside {}",
+            snapshot.path.display(),
+            dir.display()
+        );
+    }
+
+    let mut source = snapshot.path;
+    if let Some(subpath) = subpath {
+        if subpath.is_absolute() {
+            anyhow::bail!("--path must be relative: {}", subpath.display());
+        }
+        if subpath.components().any(|c| c == Component::ParentDir) {
+            anyhow::bail!("--path must not contain '..': {}", subpath.display());
+        }
+        source = source.join(subpath);
+    }
+    if !source.exists() {
+        anyhow::bail!("no such path in snapshot: {}", source.display());
+    }
+    Ok(source)
+}
+
+/// Copy a resolved source into `to` using the given backend.
+pub fn restore_into<R: Restore>(restore: &R, source: &Path, to: &Path) -> Result<()> {
+    restore.restore(source, to)?;
+    info!(source = %source.display(), to = %to.display(), "restored");
+    Ok(())
+}
+
+/// Restore a file or subtree from a snapshot (`bonsai restore ...`).
+///
+/// Non-destructive: it copies into `--to` and never modifies the target in
+/// place. Takes the run lock so a concurrent prune cannot remove the snapshot
+/// mid-copy.
+pub fn restore(
+    config: &Config,
+    target: &Path,
+    name: &str,
+    subpath: Option<&Path>,
+    to: &Path,
+) -> Result<()> {
+    let source = resolve_restore_source(config, target, name, subpath)?;
+
+    let _lock = match acquire_lock() {
+        Locking::Held(guard) => Some(guard),
+        Locking::Busy => anyhow::bail!("another bonsai run is in progress, try again later"),
+        Locking::Unavailable => None,
+    };
+
+    restore_into(&RsyncRestore, &source, to)
 }
 
 /// Read and parse snapshot entries from a directory, skipping foreign files.

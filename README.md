@@ -82,6 +82,17 @@ Delete individual snapshots (asks for confirmation; `--dry-run` to preview):
 bonsai --config config.toml delete /spool/photos daily-20260101
 ```
 
+Restore a file or subtree from a snapshot into a destination (copied with
+`rsync`, so it also works across filesystems; nothing is overwritten in place):
+
+```sh
+# whole snapshot
+bonsai --config config.toml restore /spool/photos daily-20260101 --to /tmp/restore
+# a single file
+bonsai --config config.toml restore /spool/photos daily-20260101 \
+  --path pictures/img.jpg --to /tmp/img.jpg
+```
+
 ## Build
 
 ```sh

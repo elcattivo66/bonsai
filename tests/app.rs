@@ -6,6 +6,7 @@ use std::path::Path;
 use bonsai::app;
 use bonsai::bcachefs::{Call, MockBcachefs};
 use bonsai::config::Config;
+use bonsai::restore::MockRestore;
 use chrono::NaiveDateTime;
 
 fn dt(year: i32, month: u32, day: u32) -> NaiveDateTime {
@@ -392,4 +393,69 @@ fn delete_paths_records_and_aggregates_failures() {
     let result = app::delete_paths(&mock, &paths);
     assert!(result.is_err());
     assert!(format!("{:#}", result.unwrap_err()).contains("1 deletion(s) failed"));
+}
+
+#[test]
+fn resolve_restore_source_defaults_to_snapshot_root() {
+    let (dir, config) = setup_with_snapshots(".snapshots", 7);
+    let target = dir.path().join("photos");
+    let source = app::resolve_restore_source(&config, &target, "daily-20260905", None).unwrap();
+    assert_eq!(source, target.join(".snapshots").join("daily-20260905"));
+}
+
+#[test]
+fn resolve_restore_source_with_subpath() {
+    let (dir, config) = setup_with_snapshots(".snapshots", 7);
+    let target = dir.path().join("photos");
+    let snap = target.join(".snapshots").join("daily-20260905");
+    fs::write(snap.join("photo.jpg"), b"x").unwrap();
+
+    let source = app::resolve_restore_source(
+        &config,
+        &target,
+        "daily-20260905",
+        Some(Path::new("photo.jpg")),
+    )
+    .unwrap();
+    assert_eq!(source, snap.join("photo.jpg"));
+}
+
+#[test]
+fn resolve_restore_source_rejects_bad_input() {
+    let (dir, config) = setup_with_snapshots(".snapshots", 7);
+    let target = dir.path().join("photos");
+
+    assert!(
+        app::resolve_restore_source(&config, &target, "daily-20260905", Some(Path::new("../x")))
+            .is_err()
+    );
+    assert!(
+        app::resolve_restore_source(&config, &target, "daily-20260905", Some(Path::new("/abs")))
+            .is_err()
+    );
+    assert!(
+        app::resolve_restore_source(
+            &config,
+            &target,
+            "daily-20260905",
+            Some(Path::new("missing"))
+        )
+        .is_err()
+    );
+    assert!(
+        app::resolve_restore_source(&config, &dir.path().join("other"), "daily-20260905", None)
+            .is_err()
+    );
+}
+
+#[test]
+fn restore_into_records_call() {
+    let (dir, config) = setup_with_snapshots(".snapshots", 7);
+    let target = dir.path().join("photos");
+    let source = app::resolve_restore_source(&config, &target, "daily-20260905", None).unwrap();
+    let dest = dir.path().join("restored");
+
+    let mock = MockRestore::new();
+    app::restore_into(&mock, &source, &dest).unwrap();
+    assert_eq!(mock.calls(), vec![(source, dest)]);
 }
