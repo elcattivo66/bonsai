@@ -6,12 +6,16 @@ use serde::{Deserialize, Serialize};
 use crate::snapshot::Tier;
 
 /// Top-level configuration, loaded from a TOML file.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Subdirectory inside each target where snapshots are stored.
     #[serde(default = "default_snapshot_subdir")]
     pub snapshot_subdir: String,
+
+    /// IANA timezone used to decide day/hour boundaries and to name snapshots.
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
 
     /// Targets to snapshot.
     #[serde(default, rename = "target")]
@@ -68,6 +72,16 @@ impl Default for Retention {
     }
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            snapshot_subdir: default_snapshot_subdir(),
+            timezone: default_timezone(),
+            targets: Vec::new(),
+        }
+    }
+}
+
 impl Config {
     /// Load and validate a configuration file.
     pub fn load(path: &Path) -> Result<Self> {
@@ -86,9 +100,19 @@ impl Config {
         Ok(config)
     }
 
+    /// The configured timezone as a resolved IANA zone.
+    pub fn tz(&self) -> chrono_tz::Tz {
+        self.timezone
+            .parse()
+            .expect("timezone was validated in Config::validate")
+    }
+
     fn validate(&self) -> Result<()> {
         if self.snapshot_subdir.is_empty() {
             anyhow::bail!("snapshot_subdir must not be empty");
+        }
+        if self.timezone.parse::<chrono_tz::Tz>().is_err() {
+            anyhow::bail!("invalid timezone: {}", self.timezone);
         }
         // The subdir is joined onto each target path; an absolute path would
         // silently discard the target (`Path::join` semantics) and `..` would
@@ -165,6 +189,10 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 fn default_snapshot_subdir() -> String {
     ".snapshots".to_owned()
+}
+
+fn default_timezone() -> String {
+    "UTC".to_owned()
 }
 
 const fn default_hourly() -> u32 {
@@ -349,5 +377,46 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cfg.snapshot_subdir, ".snapshots/deep");
+    }
+
+    #[test]
+    fn defaults_timezone_to_utc() {
+        let cfg = Config::parse(
+            r#"
+            [[target]]
+            path = "/spool/x"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.timezone, "UTC");
+    }
+
+    #[test]
+    fn accepts_iana_timezone() {
+        let cfg = Config::parse(
+            r#"
+            timezone = "Europe/Berlin"
+            [[target]]
+            path = "/spool/x"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.tz(), chrono_tz::Tz::Europe__Berlin);
+    }
+
+    #[test]
+    fn rejects_invalid_timezone() {
+        let err = Config::parse(
+            r#"
+            timezone = "Mars/Phobos"
+            [[target]]
+            path = "/spool/x"
+            "#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("invalid timezone"),
+            "unexpected error: {err}"
+        );
     }
 }

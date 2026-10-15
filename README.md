@@ -44,11 +44,17 @@ See [`config.example.toml`](config.example.toml):
 
 ```toml
 snapshot_subdir = ".snapshots"
+timezone = "Europe/Berlin"
 
 [[target]]
 path = "/spool/garage"
-retention = { daily = 7, weekly = 4, monthly = 6, yearly = 1 }
+retention = { hourly = 24, daily = 7, weekly = 4, monthly = 6, yearly = 1 }
 ```
+
+`timezone` (IANA name, default `UTC`) controls day/hour boundaries and how
+snapshots are named. Changing it does not rename existing snapshots — they keep
+the names they were created with, so a boundary day may appear twice or be
+skipped once across the change.
 
 ## Usage
 

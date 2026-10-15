@@ -4,6 +4,10 @@
 # Subdirectory inside each target where snapshots are stored.
 snapshot_subdir = ".snapshots"
 
+# IANA timezone; decides day/hour boundaries and how snapshots are named.
+# Defaults to "UTC".
+timezone = "Europe/Berlin"
+
 [[target]]
 path = "/spool/garage"
 # hourly defaults to 0 (disabled); enable it only if the timer runs hourly.

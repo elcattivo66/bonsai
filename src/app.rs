@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use chrono::NaiveDateTime;
+use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono_tz::Tz;
 use tracing::{info, warn};
 
 use crate::bcachefs::{Bcachefs, RealBcachefs};
@@ -29,8 +30,14 @@ pub fn snapshot(config: &Config, dry_run: bool, only: &[PathBuf]) -> Result<()> 
     };
 
     let bcachefs = RealBcachefs::default();
-    let now = chrono::Utc::now().naive_utc();
+    let now = local_datetime(config.tz(), Utc::now());
     snapshot_with(&bcachefs, config, now, dry_run, only)
+}
+
+/// Current wall-clock time in `tz`, used to decide day/hour boundaries and to
+/// name snapshots.
+fn local_datetime(tz: Tz, utc: DateTime<Utc>) -> NaiveDateTime {
+    utc.with_timezone(&tz).naive_local()
 }
 
 /// Snapshot cycle with an injected filesystem backend and clock (for tests).
@@ -172,4 +179,33 @@ pub fn read_snapshots(dir: &Path) -> Result<Vec<Snapshot>> {
         snapshots.push(snapshot);
     }
     Ok(snapshots)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_datetime_uses_timezone() {
+        let tz: Tz = "Europe/Berlin".parse().unwrap();
+        let utc = DateTime::parse_from_rfc3339("2026-01-01T00:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        // Berlin is UTC+1 in winter, so 00:30Z is 01:30 local.
+        assert_eq!(
+            local_datetime(tz, utc),
+            NaiveDateTime::new(
+                chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                chrono::NaiveTime::from_hms_opt(1, 30, 0).unwrap(),
+            )
+        );
+    }
+
+    #[test]
+    fn local_datetime_in_utc_is_identity() {
+        let utc = DateTime::parse_from_rfc3339("2026-06-15T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(local_datetime(Tz::UTC, utc), utc.naive_utc());
+    }
 }
