@@ -2,12 +2,9 @@
 
 Informal, prioritized roadmap. Versions are milestones, not promises.
 
-## v0.1.1 — Hardening (now)
+## v0.1.0 — Released
 
-- [ ] Verify on a real bcachefs host that `bcachefs subvolume delete` works on
-      read-only snapshots (created via `subvolume snapshot -r`); revert `-r`
-      if pruning breaks because of it.
-- [ ] Tag `v0.1.0`.
+- [x] Tag `v0.1.0`.
 - Note: `cargo publish` is currently blocked by the self dev-dependency that
       enables the `test-util` feature for integration tests; publishing would
       require moving `MockBcachefs` into a separate workspace crate.
@@ -36,3 +33,10 @@ Informal, prioritized roadmap. Versions are milestones, not promises.
 - [ ] `bonsai status` with a state file / health reporting.
 - [ ] node-exporter textfile metrics.
 - [ ] TUI, if ever.
+
+## Decisions
+
+- **Writable snapshots (no `-r`):** bonsai deliberately does *not* create
+  read-only snapshots; it uses the default (writable) bcachefs snapshots, as
+  the original shell script did. Revisit read-only only if `bcachefs subvolume
+  delete` is confirmed to delete read-only snapshots cleanly.

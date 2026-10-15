@@ -4,7 +4,7 @@ Grandfather-father-son (GFS) snapshot manager for [bcachefs](https://bcachefs.or
 in the spirit of [snapper](https://github.com/openSUSE/snapper) and
 [sanoid](https://github.com/jimsalterjrs/sanoid).
 
-bonsai creates read-only bcachefs subvolume snapshots on a schedule and prunes
+bonsai creates bcachefs subvolume snapshots on a schedule and prunes
 them according to a per-target retention policy. It is a Rust reimplementation
 and evolution of a shell script.
 
@@ -23,9 +23,8 @@ A retention of `0` disables that tier: no new snapshots are created for it,
 but any existing snapshots of that tier are still pruned.
 
 Snapshots are named `<tier>-YYYYMMDD` and stored under
-`<target>/<snapshot_subdir>/` (default `.snapshots`). They are created
-read-only (`bcachefs subvolume snapshot -r`), so an accidental write cannot
-modify history; browse with `ls`, restore with `cp -a` (or
+`<target>/<snapshot_subdir>/` (default `.snapshots`). They are regular
+bcachefs snapshots; browse with `ls`, restore with `cp -a` (or
 `cp --reflink=auto` for copy-on-write clones within the same filesystem).
 
 Failures are isolated per target: a target whose snapshots cannot be read,

@@ -35,7 +35,7 @@ impl fmt::Display for Tier {
     }
 }
 
-/// A single read-only snapshot subvolume.
+/// A single snapshot subvolume.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     pub tier: Tier,

@@ -15,7 +15,7 @@ use tracing::warn;
 /// Implemented for real by shelling out to the `bcachefs` CLI and mocked in
 /// tests, so the planner and orchestration can be exercised without a mount.
 pub trait Bcachefs {
-    /// Create a read-only snapshot of `source` at `dest`.
+    /// Create a snapshot of `source` at `dest`.
     fn snapshot(&self, source: &Path, dest: &Path) -> Result<()>;
     /// Delete the subvolume at `path`.
     fn delete(&self, path: &Path) -> Result<()>;
@@ -42,12 +42,11 @@ impl Default for RealBcachefs {
 }
 
 impl RealBcachefs {
-    /// `bcachefs subvolume snapshot -r <source> <dest>` — read-only, so an
-    /// accidental write cannot modify history.
+    /// `bcachefs subvolume snapshot <source> <dest>`.
     fn snapshot_command(source: &Path, dest: &Path) -> Command {
         let mut command = Command::new("bcachefs");
         command
-            .args(["subvolume", "snapshot", "-r"])
+            .args(["subvolume", "snapshot"])
             .arg(source)
             .arg(dest);
         command
@@ -226,11 +225,11 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_is_read_only_with_source_and_dest() {
+    fn snapshot_passes_source_and_dest() {
         let command = RealBcachefs::snapshot_command(Path::new("/a"), Path::new("/a/.snapshots/x"));
         assert_eq!(
             args(&command),
-            ["subvolume", "snapshot", "-r", "/a", "/a/.snapshots/x"]
+            ["subvolume", "snapshot", "/a", "/a/.snapshots/x"]
         );
     }
 
