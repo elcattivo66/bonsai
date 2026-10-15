@@ -1,8 +1,8 @@
 [package]
 name = "bonsai"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.85"
+edition = "2024"
+rust-version = "1.99"
 description = "Grandfather-father-son snapshot manager for bcachefs (snapper/sanoid-style)"
 license = "AGPL-3.0-only"
 repository = "https://github.com/elcattivo66/bonsai"

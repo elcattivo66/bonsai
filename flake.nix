@@ -29,10 +29,16 @@
             inherit system;
             overlays = [ inputs.rust-overlay.overlays.default ];
           };
-          toolchain = pkgs.rust-bin.stable.latest.default;
+          # Pinned toolchain; keep in sync with rust-toolchain.toml and the
+          # CI workflow.
+          toolchain = pkgs.rust-bin.stable."1.99.0".default;
+          rustPlatform = pkgs.makeRustPlatform {
+            rustc = toolchain;
+            cargo = toolchain;
+          };
         in
         {
-          packages.default = pkgs.rustPlatform.buildRustPackage {
+          packages.default = rustPlatform.buildRustPackage {
             pname = "bonsai";
             # Keep in sync with Cargo.toml automatically.
             version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;

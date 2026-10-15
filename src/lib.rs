@@ -19,5 +19,5 @@ pub mod policy;
 pub mod snapshot;
 
 pub use config::Config;
-pub use policy::{plan, Plan};
+pub use policy::{Plan, plan};
 pub use snapshot::{Snapshot, Tier};

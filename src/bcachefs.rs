@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use tracing::warn;
 
 /// Side effects against a bcachefs filesystem.
