@@ -12,6 +12,24 @@ use crate::lock;
 use crate::policy;
 use crate::snapshot::{Snapshot, Tier};
 
+/// Outcome of trying to take the run lock.
+enum Locking {
+    Held(lock::LockGuard),
+    Busy,
+    Unavailable,
+}
+
+fn acquire_lock() -> Locking {
+    match lock::try_acquire(Path::new(lock::DEFAULT_LOCK_PATH)) {
+        Ok(Some(guard)) => Locking::Held(guard),
+        Ok(None) => Locking::Busy,
+        Err(error) => {
+            warn!(error = %error, "could not acquire lock, proceeding without it");
+            Locking::Unavailable
+        }
+    }
+}
+
 /// Run the snapshot + prune cycle across the configured targets.
 ///
 /// Acquires an exclusive, non-blocking lock so that overlapping runs (e.g. a
@@ -23,16 +41,13 @@ pub fn snapshot(config: &Config, dry_run: bool, only: &[PathBuf], json: bool) ->
         anyhow::bail!("--json is only supported together with --dry-run");
     }
 
-    let _lock = match lock::try_acquire(Path::new(lock::DEFAULT_LOCK_PATH)) {
-        Ok(Some(guard)) => Some(guard),
-        Ok(None) => {
+    let _lock = match acquire_lock() {
+        Locking::Held(guard) => Some(guard),
+        Locking::Busy => {
             info!("another bonsai run is in progress, skipping");
             return Ok(());
         }
-        Err(error) => {
-            warn!(error = %error, "could not acquire lock, proceeding without it");
-            None
-        }
+        Locking::Unavailable => None,
     };
 
     let now = local_datetime(config.tz(), Utc::now());
@@ -242,6 +257,108 @@ pub fn plan_report(config: &Config, only: &[PathBuf], now: NaiveDateTime) -> Res
         });
     }
     Ok(PlanReport { targets })
+}
+
+/// Resolve the paths a `delete` invocation targets.
+///
+/// The target must be configured, and every name must parse as a snapshot that
+/// resolves to a direct child of the target's snapshot directory.
+pub fn resolve_delete_paths(
+    config: &Config,
+    target: &Path,
+    names: &[String],
+) -> Result<Vec<PathBuf>> {
+    let target_buf = target.to_path_buf();
+    let selected = config.selected(std::slice::from_ref(&target_buf));
+    let Some(target) = selected.first() else {
+        anyhow::bail!("target not in config: {}", target_buf.display());
+    };
+    let dir = Snapshot::dir_for(&target.path, &config.snapshot_subdir);
+
+    let mut paths = Vec::new();
+    for name in names {
+        let snapshot = Snapshot::parse_entry(&dir, name)
+            .ok_or_else(|| anyhow::anyhow!("not a snapshot name: {name}"))?;
+        if snapshot.path.parent() != Some(dir.as_path()) {
+            anyhow::bail!(
+                "refusing to delete {}: not inside {}",
+                snapshot.path.display(),
+                dir.display()
+            );
+        }
+        paths.push(snapshot.path);
+    }
+    Ok(paths)
+}
+
+/// Delete the given snapshot paths, collecting per-path failures.
+pub fn delete_paths<B: Bcachefs>(bcachefs: &B, paths: &[PathBuf]) -> Result<()> {
+    let mut failures: Vec<anyhow::Error> = Vec::new();
+    for path in paths {
+        match bcachefs.delete(path) {
+            Ok(()) => info!(path = %path.display(), "deleted"),
+            Err(error) => failures.push(error.context(path.display().to_string())),
+        }
+    }
+    if !failures.is_empty() {
+        let messages: Vec<String> = failures.iter().map(|e| format!("{e:#}")).collect();
+        anyhow::bail!(
+            "{} deletion(s) failed:\n{}",
+            failures.len(),
+            messages.join("\n")
+        );
+    }
+    Ok(())
+}
+
+/// Delete individual snapshots (`bonsai delete <target> <name>...`).
+///
+/// Requires interactive confirmation (there is deliberately no `--force`);
+/// with `dry_run` it only prints what would be deleted. Takes the run lock so
+/// it cannot race a concurrent prune.
+pub fn delete(config: &Config, target: &Path, names: &[String], dry_run: bool) -> Result<()> {
+    let paths = resolve_delete_paths(config, target, names)?;
+
+    if dry_run {
+        for path in &paths {
+            println!("would delete {}", path.display());
+        }
+        return Ok(());
+    }
+
+    eprintln!("About to delete:");
+    for path in &paths {
+        eprintln!("  {}", path.display());
+    }
+    if !confirm()? {
+        eprintln!("aborted");
+        return Ok(());
+    }
+
+    let _lock = match acquire_lock() {
+        Locking::Held(guard) => Some(guard),
+        Locking::Busy => anyhow::bail!("another bonsai run is in progress, try again later"),
+        Locking::Unavailable => None,
+    };
+
+    let bcachefs = RealBcachefs::default();
+    delete_paths(&bcachefs, &paths)
+}
+
+/// Ask for confirmation on stderr; returns false on EOF (non-interactive).
+fn confirm() -> Result<bool> {
+    use std::io::Write;
+    eprint!("Delete these snapshots? [y/N] ");
+    std::io::stderr().flush().context("flushing stderr")?;
+    let mut input = String::new();
+    let read = std::io::stdin()
+        .read_line(&mut input)
+        .context("reading confirmation")?;
+    if read == 0 {
+        return Ok(false);
+    }
+    let answer = input.trim().to_ascii_lowercase();
+    Ok(answer == "y" || answer == "yes")
 }
 
 /// Read and parse snapshot entries from a directory, skipping foreign files.

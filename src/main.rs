@@ -50,6 +50,20 @@ enum Command {
         #[arg(value_name = "TARGET")]
         targets: Vec<PathBuf>,
     },
+    /// Delete individual snapshots (asks for confirmation).
+    Delete {
+        /// Show what would be deleted without touching the filesystem.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Target path (must be configured).
+        #[arg(value_name = "TARGET")]
+        target: PathBuf,
+
+        /// Snapshot names, e.g. daily-20260101.
+        #[arg(value_name = "NAME", required = true)]
+        names: Vec<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -64,5 +78,10 @@ fn main() -> Result<()> {
             targets,
         } => app::snapshot(&config, dry_run, &targets, json),
         Command::List { json, targets } => app::list(&config, &targets, json),
+        Command::Delete {
+            dry_run,
+            target,
+            names,
+        } => app::delete(&config, &target, &names, dry_run),
     }
 }

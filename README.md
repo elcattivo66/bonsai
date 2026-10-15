@@ -76,6 +76,12 @@ bonsai --config config.toml list --json
 bonsai --config config.toml snapshot --dry-run --json
 ```
 
+Delete individual snapshots (asks for confirmation; `--dry-run` to preview):
+
+```sh
+bonsai --config config.toml delete /spool/photos daily-20260101
+```
+
 ## Build
 
 ```sh

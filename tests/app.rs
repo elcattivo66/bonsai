@@ -341,3 +341,55 @@ fn list_report_is_newest_first() {
     let value = serde_json::to_value(&report).unwrap();
     assert!(value["targets"][0]["snapshots"].is_array());
 }
+
+#[test]
+fn resolve_delete_paths_accepts_snapshot_names() {
+    let (dir, config) = setup_with_snapshots(".snapshots", 7);
+    let target = dir.path().join("photos");
+    let paths =
+        app::resolve_delete_paths(&config, &target, &["daily-20260905".to_string()]).unwrap();
+    assert_eq!(
+        paths,
+        vec![target.join(".snapshots").join("daily-20260905")]
+    );
+}
+
+#[test]
+fn resolve_delete_paths_rejects_unknown_target_and_bad_names() {
+    let (dir, config) = setup_with_snapshots(".snapshots", 7);
+    let target = dir.path().join("photos");
+
+    let err = app::resolve_delete_paths(
+        &config,
+        &dir.path().join("other"),
+        &["daily-20260905".to_string()],
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("not in config"), "{err}");
+
+    let err = app::resolve_delete_paths(&config, &target, &["nonsense".to_string()]).unwrap_err();
+    assert!(err.to_string().contains("not a snapshot name"), "{err}");
+}
+
+#[test]
+fn delete_paths_records_and_aggregates_failures() {
+    let (dir, _config) = setup_with_snapshots(".snapshots", 7);
+    let snap_dir = dir.path().join("photos").join(".snapshots");
+    let paths = vec![
+        snap_dir.join("daily-20260901"),
+        snap_dir.join("daily-20260902"),
+    ];
+
+    let mock = MockBcachefs::new();
+    app::delete_paths(&mock, &paths).unwrap();
+    assert_eq!(
+        deleted_snapshots(&mock.calls()),
+        vec!["daily-20260901", "daily-20260902"]
+    );
+
+    let mock = MockBcachefs::new();
+    mock.fail_next_deletes(1);
+    let result = app::delete_paths(&mock, &paths);
+    assert!(result.is_err());
+    assert!(format!("{:#}", result.unwrap_err()).contains("1 deletion(s) failed"));
+}
