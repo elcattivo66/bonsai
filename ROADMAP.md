@@ -9,14 +9,14 @@ Informal, prioritized roadmap. Versions are milestones, not promises.
       enables the `test-util` feature for integration tests; publishing would
       require moving `MockBcachefs` into a separate workspace crate.
 
-## v0.2 — snapper/sanoid parity
+## v0.2.0 — Released
 
-- [ ] `hourly` tier — decide the name format (`<tier>-YYYYMMDDHH`) before many
-      day-format snapshots accumulate; the parser must keep accepting the
-      existing 8-digit names.
-- [ ] `timezone` option for local rollover instead of UTC.
-- [ ] `--json` output for `list` and `snapshot --dry-run`.
-- [ ] `delete` and `restore` commands (`cp -a --reflink` for copy-on-write).
+- [x] `hourly` tier — 10-digit names (`<tier>-YYYYMMDDHH`); the parser still
+      accepts the 8-digit names.
+- [x] `timezone` option (IANA name, default UTC) for local rollover.
+- [x] `--json` output for `list` and `snapshot --dry-run`.
+- [x] `delete` (interactive confirmation, locked) and `restore` (via `rsync`).
+- [ ] Open: `snapshot --json` for a real run (needs per-target results).
 
 ## v0.3 — Robustness & integration
 
