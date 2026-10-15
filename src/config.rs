@@ -31,6 +31,8 @@ pub struct Target {
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Retention {
+    #[serde(default = "default_hourly")]
+    pub hourly: u32,
     #[serde(default = "default_daily")]
     pub daily: u32,
     #[serde(default = "default_weekly")]
@@ -45,6 +47,7 @@ impl Retention {
     /// Keep-count for a given tier.
     pub fn get(&self, tier: Tier) -> u32 {
         match tier {
+            Tier::Hourly => self.hourly,
             Tier::Daily => self.daily,
             Tier::Weekly => self.weekly,
             Tier::Monthly => self.monthly,
@@ -56,6 +59,7 @@ impl Retention {
 impl Default for Retention {
     fn default() -> Self {
         Retention {
+            hourly: default_hourly(),
             daily: default_daily(),
             weekly: default_weekly(),
             monthly: default_monthly(),
@@ -161,6 +165,10 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 fn default_snapshot_subdir() -> String {
     ".snapshots".to_owned()
+}
+
+const fn default_hourly() -> u32 {
+    0
 }
 
 const fn default_daily() -> u32 {

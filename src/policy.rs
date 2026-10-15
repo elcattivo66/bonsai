@@ -14,15 +14,16 @@ pub struct Plan {
     pub prune: Vec<Snapshot>,
 }
 
-/// Tiers that should be created for a run on `now` (UTC).
+/// Tiers that should be created for a run at `now`.
 ///
-/// Mirrors the original shell logic:
-/// * daily — always,
+/// Mirrors the original shell logic, with hourly added on top:
+/// * hourly — every run (one per hour, deduplicated by name),
+/// * daily — every run (one per day, deduplicated by name),
 /// * weekly — on Sundays (ISO weekday 7),
 /// * monthly — on the 1st,
 /// * yearly — on January 1st.
 pub fn tiers_for(now: NaiveDateTime) -> Vec<Tier> {
-    let mut tiers = vec![Tier::Daily];
+    let mut tiers = vec![Tier::Hourly, Tier::Daily];
     if now.weekday() == Weekday::Sun {
         tiers.push(Tier::Weekly);
     }
@@ -97,15 +98,18 @@ mod tests {
     }
 
     #[test]
-    fn daily_always() {
+    fn hourly_and_daily_always() {
         // 2026-10-14 is a Wednesday.
-        assert_eq!(tiers_for(dt(2026, 10, 14)), vec![Tier::Daily]);
+        assert_eq!(tiers_for(dt(2026, 10, 14)), vec![Tier::Hourly, Tier::Daily]);
     }
 
     #[test]
     fn weekly_on_sunday() {
         // 2026-10-11 is a Sunday.
-        assert_eq!(tiers_for(dt(2026, 10, 11)), vec![Tier::Daily, Tier::Weekly]);
+        assert_eq!(
+            tiers_for(dt(2026, 10, 11)),
+            vec![Tier::Hourly, Tier::Daily, Tier::Weekly]
+        );
     }
 
     #[test]
@@ -113,7 +117,7 @@ mod tests {
         // 2026-01-01 is a Thursday.
         assert_eq!(
             tiers_for(dt(2026, 1, 1)),
-            vec![Tier::Daily, Tier::Monthly, Tier::Yearly]
+            vec![Tier::Hourly, Tier::Daily, Tier::Monthly, Tier::Yearly]
         );
     }
 
@@ -122,7 +126,7 @@ mod tests {
         // 2026-02-01 is a Sunday.
         assert_eq!(
             tiers_for(dt(2026, 2, 1)),
-            vec![Tier::Daily, Tier::Weekly, Tier::Monthly]
+            vec![Tier::Hourly, Tier::Daily, Tier::Weekly, Tier::Monthly]
         );
     }
 
@@ -132,6 +136,47 @@ mod tests {
         let plan = plan(dt(2026, 10, 14), dir, &[], Retention::default());
         assert_eq!(names(&plan.create), vec!["daily-20261014"]);
         assert!(plan.prune.is_empty());
+    }
+
+    #[test]
+    fn creates_hourly_when_enabled() {
+        let dir = Path::new("/spool/x/.snapshots");
+        let retention = Retention {
+            hourly: 24,
+            ..Retention::default()
+        };
+        let at = dt(2026, 10, 14) + chrono::Duration::hours(9);
+        let plan = plan(at, dir, &[], retention);
+        // Sorted by file name: daily before hourly.
+        assert_eq!(
+            names(&plan.create),
+            vec!["daily-20261014", "hourly-2026101409"]
+        );
+    }
+
+    #[test]
+    fn prunes_oldest_hourly() {
+        let dir = Path::new("/spool/x/.snapshots");
+        let base = dt(2026, 9, 1);
+        let existing: Vec<Snapshot> = (0..5)
+            .map(|h| Snapshot::new(Tier::Hourly, base + chrono::Duration::hours(h), dir))
+            .collect();
+        let retention = Retention {
+            hourly: 3,
+            daily: 0,
+            weekly: 0,
+            monthly: 0,
+            yearly: 0,
+        };
+        let plan = plan(dt(2026, 9, 2), dir, &existing, retention);
+        assert_eq!(
+            names(&plan.prune),
+            vec![
+                "hourly-2026090100",
+                "hourly-2026090101",
+                "hourly-2026090102",
+            ]
+        );
     }
 
     #[test]

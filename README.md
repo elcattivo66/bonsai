@@ -13,6 +13,7 @@ and evolution of a shell script.
 On each run, for every configured target:
 
 1. **Create** the tiers due today (UTC):
+   - `hourly` — every run (disabled by default; needs an hourly timer),
    - `daily` — every day,
    - `weekly` — on Sundays,
    - `monthly` — on the 1st,
@@ -21,6 +22,10 @@ On each run, for every configured target:
 
 A retention of `0` disables that tier: no new snapshots are created for it,
 but any existing snapshots of that tier are still pruned.
+
+`hourly` is off by default. If you enable it, the systemd timer must actually
+fire at least hourly (the schedule is not derived from the retention), otherwise
+you only get one hourly snapshot per timer run.
 
 Snapshots are named `<tier>-YYYYMMDD` and stored under
 `<target>/<snapshot_subdir>/` (default `.snapshots`). They are regular

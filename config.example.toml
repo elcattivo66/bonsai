@@ -6,8 +6,8 @@ snapshot_subdir = ".snapshots"
 
 [[target]]
 path = "/spool/garage"
-# Retention defaults to 7 daily, 4 weekly, 6 monthly, 1 yearly.
-retention = { daily = 7, weekly = 4, monthly = 6, yearly = 1 }
+# hourly defaults to 0 (disabled); enable it only if the timer runs hourly.
+retention = { hourly = 24, daily = 7, weekly = 4, monthly = 6, yearly = 1 }
 
 [[target]]
 path = "/spool/paperless"
