@@ -1,9 +1,5 @@
 use std::path::Path;
-#[cfg(any(test, feature = "test-util"))]
-use std::path::PathBuf;
 use std::process::Command;
-#[cfg(any(test, feature = "test-util"))]
-use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
 
@@ -70,36 +66,5 @@ fn describe(command: &Command) -> String {
         program
     } else {
         format!("{program} {args}")
-    }
-}
-
-/// In-memory [`Restore`] that records calls instead of copying anything.
-#[cfg(any(test, feature = "test-util"))]
-#[derive(Debug, Default)]
-pub struct MockRestore {
-    calls: Mutex<Vec<(PathBuf, PathBuf)>>,
-}
-
-#[cfg(any(test, feature = "test-util"))]
-impl MockRestore {
-    /// Create an empty mock.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Recorded `(source, dest)` pairs.
-    pub fn calls(&self) -> Vec<(PathBuf, PathBuf)> {
-        self.calls.lock().unwrap().clone()
-    }
-}
-
-#[cfg(any(test, feature = "test-util"))]
-impl Restore for MockRestore {
-    fn restore(&self, source: &Path, dest: &Path) -> Result<()> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push((source.to_path_buf(), dest.to_path_buf()));
-        Ok(())
     }
 }

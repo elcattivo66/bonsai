@@ -1,0 +1,19 @@
+[package]
+name = "bonsai-test-util"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Test doubles for the bonsai bcachefs and restore traits"
+license = "AGPL-3.0-only"
+repository = "https://github.com/elcattivo66/bonsai"
+publish = false
+
+[dependencies]
+anyhow = "1"
+bonsai = { path = "../.." }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"

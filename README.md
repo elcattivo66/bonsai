@@ -135,6 +135,10 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
+The test doubles (`MockBcachefs`, `MockRestore`) live in the unpublished
+workspace crate [`crates/bonsai-test-util`](crates/bonsai-test-util), so the
+main crate has no self dev-dependency and can be published to crates.io.
+
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md).

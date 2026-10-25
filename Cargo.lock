@@ -93,7 +93,7 @@ name = "bonsai"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "bonsai",
+ "bonsai-test-util",
  "chrono",
  "chrono-tz",
  "clap",
@@ -105,6 +105,14 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "bonsai-test-util"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "bonsai",
 ]
 
 [[package]]

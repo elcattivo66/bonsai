@@ -5,9 +5,9 @@ Informal, prioritized roadmap. Versions are milestones, not promises.
 ## v0.1.0 — Released
 
 - [x] Tag `v0.1.0`.
-- Note: `cargo publish` is currently blocked by the self dev-dependency that
-      enables the `test-util` feature for integration tests; publishing would
-      require moving `MockBcachefs` into a separate workspace crate.
+- Note: `cargo publish` was blocked by the self dev-dependency that enabled
+      the `test-util` feature for integration tests. Resolved: the mocks now
+      live in the unpublished `bonsai-test-util` workspace crate.
 
 ## v0.2.0 — Released
 

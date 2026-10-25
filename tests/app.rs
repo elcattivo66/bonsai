@@ -4,9 +4,9 @@ use std::fs;
 use std::path::Path;
 
 use bonsai::app;
-use bonsai::bcachefs::{Call, MockBcachefs, SubvolumeEntry};
+use bonsai::bcachefs::SubvolumeEntry;
 use bonsai::config::Config;
-use bonsai::restore::MockRestore;
+use bonsai_test_util::{Call, MockBcachefs, MockRestore};
 use chrono::NaiveDateTime;
 
 fn dt(year: i32, month: u32, day: u32) -> NaiveDateTime {
