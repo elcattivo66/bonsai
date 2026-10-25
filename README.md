@@ -74,7 +74,13 @@ bonsai --config config.toml snapshot /spool/photos
 # Machine-readable output (JSON on stdout, logs stay on stderr).
 bonsai --config config.toml list --json
 bonsai --config config.toml snapshot --dry-run --json
+bonsai --config config.toml snapshot --json
 ```
+
+For a real snapshot run, `snapshot --json` reports completed operations and
+per-target errors; the command exits non-zero if any operation failed. If the
+run is skipped because another run holds the lock, the report has `skipped: true`
+and an empty `targets` array.
 
 Delete individual snapshots (asks for confirmation; `--dry-run` to preview):
 

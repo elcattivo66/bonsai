@@ -314,6 +314,7 @@ fn plan_report_reflects_prune_plan() {
     let (_dir, config) = setup_with_snapshots(".snapshots", 7);
     let report = app::plan_report(&config, &[], dt(2026, 9, 10)).unwrap();
     assert_eq!(report.targets.len(), 1);
+    assert!(!report.skipped);
     let target = &report.targets[0];
     assert!(target.create.is_empty());
     assert_eq!(
@@ -329,6 +330,48 @@ fn plan_report_reflects_prune_plan() {
     assert!(value["targets"][0]["prune"][0]["name"].is_string());
     assert!(value["targets"][0]["prune"][0]["tier"].is_string());
     assert!(value["targets"][0]["prune"][0]["time"].is_string());
+}
+
+#[test]
+fn snapshot_report_contains_completed_create_and_prune_operations() {
+    let (_dir, config) = setup_with_snapshots(".snapshots", 7);
+    let mock = MockBcachefs::new();
+    let report = app::snapshot_report_with(&mock, &config, dt(2026, 9, 11), false, &[]);
+
+    assert_eq!(report.targets.len(), 1);
+    assert!(!report.skipped);
+    let target = &report.targets[0];
+    assert_eq!(target.created[0].name, "daily-20260911");
+    assert_eq!(
+        target
+            .pruned
+            .iter()
+            .map(|snapshot| snapshot.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "daily-20260901",
+            "daily-20260902",
+            "daily-20260903",
+            "daily-20260904",
+        ]
+    );
+    assert!(target.errors.is_empty());
+
+    let value = serde_json::to_value(&report).unwrap();
+    assert_eq!(value["targets"][0]["created"][0]["name"], "daily-20260911");
+    assert_eq!(value["targets"][0]["errors"], serde_json::json!([]));
+}
+
+#[test]
+fn snapshot_report_keeps_partial_results_and_errors() {
+    let (_dir, config) = setup_with_snapshots(".snapshots", 7);
+    let mock = MockBcachefs::new();
+    mock.fail_next_deletes(2);
+    let report = app::snapshot_report_with(&mock, &config, dt(2026, 9, 10), false, &[]);
+
+    let target = &report.targets[0];
+    assert_eq!(target.pruned.len(), 1);
+    assert_eq!(target.errors.len(), 2);
 }
 
 #[test]

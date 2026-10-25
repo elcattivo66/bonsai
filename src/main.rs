@@ -32,7 +32,7 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
 
-        /// Print the plan as JSON (only with --dry-run).
+        /// Print the plan or run results as JSON.
         #[arg(long)]
         json: bool,
 

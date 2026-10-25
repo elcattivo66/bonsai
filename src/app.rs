@@ -35,17 +35,16 @@ fn acquire_lock() -> Locking {
 ///
 /// Acquires an exclusive, non-blocking lock so that overlapping runs (e.g. a
 /// slow retry loop racing the next timer fire) cannot prune each other's
-/// freshly-created snapshots. With `json` (only valid together with `dry_run`)
-/// the plan is printed as JSON instead of being applied.
+/// freshly-created snapshots. A JSON dry run prints the plan; a real JSON run
+/// prints the completed operations and per-target errors.
 pub fn snapshot(config: &Config, dry_run: bool, only: &[PathBuf], json: bool) -> Result<()> {
-    if json && !dry_run {
-        anyhow::bail!("--json is only supported together with --dry-run");
-    }
-
     let _lock = match acquire_lock() {
         Locking::Held(guard) => Some(guard),
         Locking::Busy => {
             info!("another bonsai run is in progress, skipping");
+            if json {
+                println!("{}", skipped_report_json(dry_run)?);
+            }
             return Ok(());
         }
         Locking::Unavailable => None,
@@ -53,14 +52,33 @@ pub fn snapshot(config: &Config, dry_run: bool, only: &[PathBuf], json: bool) ->
 
     let now = local_datetime(config.tz(), Utc::now());
 
-    if json {
+    if json && dry_run {
         let report = plan_report(config, only, now)?;
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
 
     let bcachefs = RealBcachefs::default();
+    if json {
+        let report = snapshot_report_with(&bcachefs, config, now, false, only);
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return report.into_result();
+    }
     snapshot_with(&bcachefs, config, now, dry_run, only)
+}
+
+fn skipped_report_json(dry_run: bool) -> Result<String> {
+    if dry_run {
+        Ok(serde_json::to_string_pretty(&PlanReport {
+            skipped: true,
+            targets: Vec::new(),
+        })?)
+    } else {
+        Ok(serde_json::to_string_pretty(&SnapshotReport {
+            skipped: true,
+            targets: Vec::new(),
+        })?)
+    }
 }
 
 /// Current wall-clock time in `tz`, used to decide day/hour boundaries and to
@@ -82,7 +100,18 @@ pub fn snapshot_with<B: Bcachefs>(
     dry_run: bool,
     only: &[PathBuf],
 ) -> Result<()> {
-    let mut failures: Vec<anyhow::Error> = Vec::new();
+    snapshot_report_with(bcachefs, config, now, dry_run, only).into_result()
+}
+
+/// Run the snapshot cycle and return completed operations and per-target errors.
+pub fn snapshot_report_with<B: Bcachefs>(
+    bcachefs: &B,
+    config: &Config,
+    now: NaiveDateTime,
+    dry_run: bool,
+    only: &[PathBuf],
+) -> SnapshotReport {
+    let mut targets = Vec::new();
 
     for target in config.selected(only) {
         if !target.path.is_dir() {
@@ -91,38 +120,41 @@ pub fn snapshot_with<B: Bcachefs>(
         }
 
         let dir = Snapshot::dir_for(&target.path, &config.snapshot_subdir);
-        match process_target(bcachefs, target, &dir, now, dry_run, &mut failures) {
-            Ok(()) => {}
-            Err(error) => failures.push(error.context(target.path.display().to_string())),
-        }
+        targets.push(process_target(bcachefs, target, &dir, now, dry_run));
     }
 
-    if !failures.is_empty() {
-        let n = failures.len();
-        let messages: Vec<String> = failures.iter().map(|e| format!("{e:#}")).collect();
-        return Err(anyhow::anyhow!(
-            "{n} operation(s) failed:\n{}",
-            messages.join("\n")
-        ));
+    SnapshotReport {
+        skipped: false,
+        targets,
     }
-
-    Ok(())
 }
 
 /// Read, plan and apply the work for a single target.
 ///
-/// Delete failures are collected into `failures` and do not abort the target;
-/// snapshot-create failures abort this target (and are reported by the
-/// caller) but not the remaining targets.
+/// Delete failures are recorded and do not abort the target; snapshot-create
+/// failures abort this target but not the remaining targets.
 fn process_target<B: Bcachefs>(
     bcachefs: &B,
     target: &Target,
     dir: &Path,
     now: NaiveDateTime,
     dry_run: bool,
-    failures: &mut Vec<anyhow::Error>,
-) -> Result<()> {
-    let existing = read_snapshots(dir)?;
+) -> TargetSnapshotResult {
+    let mut result = TargetSnapshotResult {
+        path: target.path.display().to_string(),
+        created: Vec::new(),
+        pruned: Vec::new(),
+        errors: Vec::new(),
+    };
+    let existing = match read_snapshots(dir) {
+        Ok(existing) => existing,
+        Err(error) => {
+            result
+                .errors
+                .push(format!("{}: {error:#}", target.path.display()));
+            return result;
+        }
+    };
     let plan = policy::plan(now, dir, &existing, target.retention);
 
     info!(
@@ -137,16 +169,32 @@ fn process_target<B: Bcachefs>(
             info!(path = %snap.path.display(), "would create");
             continue;
         }
-        if let Some(parent) = snap.path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
+        if let Some(parent) = snap.path.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            result.errors.push(format!(
+                "{}: creating {}: {error}",
+                target.path.display(),
+                parent.display()
+            ));
+            return result;
         }
         if snap.path.exists() {
             warn!(path = %snap.path.display(), "already exists, skipping");
             continue;
         }
-        bcachefs.snapshot(&target.path, &snap.path)?;
-        info!(path = %snap.path.display(), "created");
+        match bcachefs.snapshot(&target.path, &snap.path) {
+            Ok(()) => {
+                info!(path = %snap.path.display(), "created");
+                result.created.push(SnapshotInfo::from(snap));
+            }
+            Err(error) => {
+                result
+                    .errors
+                    .push(format!("{}: {error:#}", target.path.display()));
+                return result;
+            }
+        }
     }
 
     for snap in &plan.prune {
@@ -155,12 +203,17 @@ fn process_target<B: Bcachefs>(
             continue;
         }
         match bcachefs.delete(&snap.path) {
-            Ok(()) => info!(path = %snap.path.display(), "pruned"),
-            Err(error) => failures.push(error.context(snap.path.display().to_string())),
+            Ok(()) => {
+                info!(path = %snap.path.display(), "pruned");
+                result.pruned.push(SnapshotInfo::from(snap));
+            }
+            Err(error) => result
+                .errors
+                .push(format!("{}: {error:#}", snap.path.display())),
         }
     }
 
-    Ok(())
+    result
 }
 
 /// List the snapshots present for each selected target.
@@ -215,7 +268,43 @@ pub struct TargetSnapshots {
 /// `--json` output of `snapshot --dry-run`.
 #[derive(Debug, Serialize)]
 pub struct PlanReport {
+    pub skipped: bool,
     pub targets: Vec<TargetPlan>,
+}
+
+/// `--json` output of a real snapshot run.
+#[derive(Debug, Serialize)]
+pub struct SnapshotReport {
+    pub skipped: bool,
+    pub targets: Vec<TargetSnapshotResult>,
+}
+
+impl SnapshotReport {
+    fn into_result(self) -> Result<()> {
+        let errors: Vec<String> = self
+            .targets
+            .iter()
+            .flat_map(|target| target.errors.iter().cloned())
+            .collect();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "{} operation(s) failed:\n{}",
+                errors.len(),
+                errors.join("\n")
+            );
+        }
+    }
+}
+
+/// Completed operations and errors for one configured target.
+#[derive(Debug, Serialize)]
+pub struct TargetSnapshotResult {
+    pub path: String,
+    pub created: Vec<SnapshotInfo>,
+    pub pruned: Vec<SnapshotInfo>,
+    pub errors: Vec<String>,
 }
 
 /// Planned work for a single target.
@@ -257,7 +346,10 @@ pub fn plan_report(config: &Config, only: &[PathBuf], now: NaiveDateTime) -> Res
             prune: plan.prune.iter().map(SnapshotInfo::from).collect(),
         });
     }
-    Ok(PlanReport { targets })
+    Ok(PlanReport {
+        skipped: false,
+        targets,
+    })
 }
 
 /// Resolve the paths a `delete` invocation targets.
@@ -494,5 +586,15 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         assert_eq!(local_datetime(Tz::UTC, utc), utc.naive_utc());
+    }
+
+    #[test]
+    fn skipped_json_report_is_explicit_for_both_modes() {
+        for dry_run in [false, true] {
+            let json = skipped_report_json(dry_run).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(value["skipped"], true);
+            assert_eq!(value["targets"], serde_json::json!([]));
+        }
     }
 }

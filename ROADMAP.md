@@ -16,7 +16,7 @@ Informal, prioritized roadmap. Versions are milestones, not promises.
 - [x] `timezone` option (IANA name, default UTC) for local rollover.
 - [x] `--json` output for `list` and `snapshot --dry-run`.
 - [x] `delete` (interactive confirmation, locked) and `restore` (via `rsync`).
-- [ ] Open: `snapshot --json` for a real run (needs per-target results).
+- [x] `snapshot --json` for a real run with per-target results.
 
 ## v0.3 — Robustness & integration
 
