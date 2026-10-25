@@ -8,6 +8,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use serde::Deserialize;
 use tracing::warn;
 
 /// Side effects against a bcachefs filesystem.
@@ -19,6 +20,52 @@ pub trait Bcachefs {
     fn snapshot(&self, source: &Path, dest: &Path) -> Result<()>;
     /// Delete the subvolume at `path`.
     fn delete(&self, path: &Path) -> Result<()>;
+    /// List subvolumes and snapshots under `target`, with sizes where
+    /// reported. Paths are relative to `target` and use `/` separators.
+    fn list_snapshots(&self, target: &Path) -> Result<Vec<SubvolumeEntry>>;
+}
+
+/// A subvolume or snapshot reported by `bcachefs subvolume list --json`.
+///
+/// Only the fields bonsai uses are kept; the raw JSON carries more (IDs,
+/// timestamps, parents) and unknown fields are ignored, so output from newer
+/// bcachefs versions still parses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubvolumeEntry {
+    /// Path relative to the listed target, e.g. `.snapshots/daily-20261019`.
+    pub path: String,
+    /// Size in bytes (`sectors * 512`), when reported.
+    pub size_bytes: Option<u64>,
+    /// Human-readable size as printed by bcachefs (e.g. `1.56T`), when reported.
+    pub size: Option<String>,
+}
+
+/// Wire format of one entry in `bcachefs subvolume list --json` output.
+#[derive(Debug, Deserialize)]
+struct RawSubvolume {
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    sectors: Option<u64>,
+    #[serde(default)]
+    size: Option<String>,
+}
+
+/// Parse the JSON array printed by `bcachefs subvolume list --json`.
+///
+/// Entries without a path (e.g. a filesystem root placeholder) are dropped.
+pub fn parse_subvolume_list(json: &[u8]) -> Result<Vec<SubvolumeEntry>> {
+    let raw: Vec<RawSubvolume> =
+        serde_json::from_slice(json).context("parsing `bcachefs subvolume list --json` output")?;
+    Ok(raw
+        .into_iter()
+        .filter(|entry| !entry.path.is_empty())
+        .map(|entry| SubvolumeEntry {
+            path: entry.path,
+            size_bytes: entry.sectors.map(|sectors| sectors * 512),
+            size: entry.size.filter(|size| !size.is_empty()),
+        })
+        .collect())
 }
 
 /// The real implementation, invoking `bcachefs`.
@@ -58,6 +105,15 @@ impl RealBcachefs {
         command.args(["subvolume", "delete"]).arg(path);
         command
     }
+
+    /// `bcachefs subvolume list --json -s <target>`.
+    fn list_command(target: &Path) -> Command {
+        let mut command = Command::new("bcachefs");
+        command
+            .args(["subvolume", "list", "--json", "-s"])
+            .arg(target);
+        command
+    }
 }
 
 impl Bcachefs for RealBcachefs {
@@ -95,9 +151,18 @@ impl Bcachefs for RealBcachefs {
     fn delete(&self, path: &Path) -> Result<()> {
         run(Self::delete_command(path))
     }
+
+    fn list_snapshots(&self, target: &Path) -> Result<Vec<SubvolumeEntry>> {
+        let output = run_output(Self::list_command(target))?;
+        parse_subvolume_list(&output.stdout)
+    }
 }
 
-fn run(mut command: Command) -> Result<()> {
+fn run(command: Command) -> Result<()> {
+    run_output(command).map(|_| ())
+}
+
+fn run_output(mut command: Command) -> Result<std::process::Output> {
     let described = describe(&command);
     let output = command
         .output()
@@ -107,7 +172,7 @@ fn run(mut command: Command) -> Result<()> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("{described} failed: {}", stderr.trim());
     }
-    Ok(())
+    Ok(output)
 }
 
 /// Render a command as a human-readable string for logs and errors.
@@ -146,6 +211,7 @@ fn is_not_retryable(error: &anyhow::Error) -> bool {
 pub enum Call {
     Snapshot { source: PathBuf, dest: PathBuf },
     Delete { path: PathBuf },
+    ListSnapshots { target: PathBuf },
 }
 
 /// In-memory [`Bcachefs`] that records calls instead of touching the disk.
@@ -158,6 +224,8 @@ pub struct MockBcachefs {
     calls: Mutex<Vec<Call>>,
     fail_snapshots: Mutex<u32>,
     fail_deletes: Mutex<u32>,
+    list_entries: Mutex<Vec<SubvolumeEntry>>,
+    fail_list: Mutex<bool>,
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -177,6 +245,17 @@ impl MockBcachefs {
     /// [`Self::calls`] so tests can verify the run continued past the failure.
     pub fn fail_next_deletes(&self, n: u32) {
         *self.fail_deletes.lock().unwrap() = n;
+    }
+
+    /// Set the entries returned by [`Bcachefs::list_snapshots`].
+    pub fn set_list_entries(&self, entries: Vec<SubvolumeEntry>) {
+        *self.list_entries.lock().unwrap() = entries;
+    }
+
+    /// Make every [`Bcachefs::list_snapshots`] call fail (e.g. to simulate a
+    /// missing binary or an unmounted filesystem).
+    pub fn fail_list_snapshots(&self) {
+        *self.fail_list.lock().unwrap() = true;
     }
 
     /// Snapshot of all recorded calls.
@@ -210,6 +289,16 @@ impl Bcachefs for MockBcachefs {
             bail!("mock delete failure");
         }
         Ok(())
+    }
+
+    fn list_snapshots(&self, target: &Path) -> Result<Vec<SubvolumeEntry>> {
+        self.calls.lock().unwrap().push(Call::ListSnapshots {
+            target: target.to_path_buf(),
+        });
+        if *self.fail_list.lock().unwrap() {
+            bail!("mock list failure");
+        }
+        Ok(self.list_entries.lock().unwrap().clone())
     }
 }
 
@@ -250,5 +339,64 @@ mod tests {
 
         let err = anyhow::anyhow!("bcachefs subvolume snapshot failed: busy");
         assert!(!is_not_retryable(&err));
+    }
+
+    #[test]
+    fn list_passes_json_and_snapshots_flags() {
+        let command = RealBcachefs::list_command(Path::new("/spool/garage"));
+        assert_eq!(
+            args(&command),
+            ["subvolume", "list", "--json", "-s", "/spool/garage"]
+        );
+    }
+
+    #[test]
+    fn parses_subvolume_list_json() {
+        // Trimmed real-world output from bcachefs 1.39.7; unknown fields
+        // (otime, subvolid, ...) must be ignored, sectors convert to bytes.
+        let json = br#"[
+            {
+                "otime": "2026-10-11 20:52",
+                "otime_unix": 1791744743,
+                "path": ".snapshots/weekly-20261011",
+                "sectors": 3348588604,
+                "size": "1.56T",
+                "snapshot_parent": "/garage",
+                "subvolid": 332
+            },
+            {
+                "path": ".snapshots/daily-20261019",
+                "sectors": 1024,
+                "size": "512K",
+                "subvolid": 361
+            }
+        ]"#;
+        let entries = parse_subvolume_list(json).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0],
+            SubvolumeEntry {
+                path: ".snapshots/weekly-20261011".to_owned(),
+                size_bytes: Some(3348588604 * 512),
+                size: Some("1.56T".to_owned()),
+            }
+        );
+        assert_eq!(entries[1].size_bytes, Some(1024 * 512));
+    }
+
+    #[test]
+    fn subvolume_list_parsing_is_tolerant() {
+        // Missing optional fields and an empty path (root placeholder).
+        let entries = parse_subvolume_list(br#"[{"path": ""}, {"path": "a/b"}]"#).unwrap();
+        assert_eq!(
+            entries,
+            vec![SubvolumeEntry {
+                path: "a/b".to_owned(),
+                size_bytes: None,
+                size: None,
+            }]
+        );
+
+        assert!(parse_subvolume_list(b"not json").is_err());
     }
 }

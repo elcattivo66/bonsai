@@ -20,9 +20,11 @@ Informal, prioritized roadmap. Versions are milestones, not promises.
 
 ## v0.3 — Robustness & integration
 
-- [ ] Inventory via `bcachefs subvolume list --json` instead of directory
-      names: source of truth, catches manually created subvolumes, and
-      provides sizes for `list`.
+- [x] Sizes in `list` (`--human-readable`) and detection of unmanaged
+      subvolumes via `bcachefs subvolume list --json -s` (conservative: the
+      directory scan remains the planning basis, and `list` falls back to it
+      when the query fails).
+- [ ] Make the subvolume list the source of truth for planning/prune as well.
 - [ ] Pre/post hooks per target (sanoid-style, e.g. database quiesce).
 - [ ] Ship the NixOS module as `nixosModules.default` in this flake so
       package and module come from one source.

@@ -46,6 +46,10 @@ enum Command {
         #[arg(long)]
         json: bool,
 
+        /// Print sizes as reported by bcachefs (e.g. 1.56T) instead of bytes.
+        #[arg(long)]
+        human_readable: bool,
+
         /// Restrict to these target paths (default: all configured targets).
         #[arg(value_name = "TARGET")]
         targets: Vec<PathBuf>,
@@ -95,7 +99,11 @@ fn main() -> Result<()> {
             json,
             targets,
         } => app::snapshot(&config, dry_run, &targets, json),
-        Command::List { json, targets } => app::list(&config, &targets, json),
+        Command::List {
+            json,
+            human_readable,
+            targets,
+        } => app::list(&config, &targets, json, human_readable),
         Command::Delete {
             dry_run,
             target,

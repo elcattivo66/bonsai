@@ -217,8 +217,9 @@ fn process_target<B: Bcachefs>(
 }
 
 /// List the snapshots present for each selected target.
-pub fn list(config: &Config, only: &[PathBuf], json: bool) -> Result<()> {
-    let report = list_report(config, only)?;
+pub fn list(config: &Config, only: &[PathBuf], json: bool, human_readable: bool) -> Result<()> {
+    let bcachefs = RealBcachefs::default();
+    let report = list_report_with(&bcachefs, config, only)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
@@ -226,10 +227,43 @@ pub fn list(config: &Config, only: &[PathBuf], json: bool) -> Result<()> {
     for target in &report.targets {
         println!("{}:", target.path);
         for snapshot in &target.snapshots {
-            println!("  {}", snapshot.name);
+            match size_display(
+                snapshot.size_bytes,
+                snapshot.size.as_deref(),
+                human_readable,
+            ) {
+                Some(size) => println!("  {}  {size}", snapshot.name),
+                None => println!("  {}", snapshot.name),
+            }
+        }
+        for unmanaged in &target.unmanaged {
+            let size = size_display(
+                unmanaged.size_bytes,
+                unmanaged.size.as_deref(),
+                human_readable,
+            );
+            match size {
+                Some(size) => println!("  {}  {size} (unmanaged)", unmanaged.name),
+                None => println!("  {}  (unmanaged)", unmanaged.name),
+            }
         }
     }
     Ok(())
+}
+
+/// Size column for the text output of `list`: bcachefs' human-readable string
+/// with `--human-readable`, raw bytes otherwise; falls back to whichever is
+/// available.
+fn size_display(bytes: Option<u64>, human: Option<&str>, human_readable: bool) -> Option<String> {
+    if human_readable {
+        human
+            .map(str::to_owned)
+            .or_else(|| bytes.map(|b| b.to_string()))
+    } else {
+        bytes
+            .map(|b| b.to_string())
+            .or_else(|| human.map(str::to_owned))
+    }
 }
 
 /// Serializable summary of a snapshot, used for `--json` output.
@@ -239,6 +273,13 @@ pub struct SnapshotInfo {
     pub time: NaiveDateTime,
     pub name: String,
     pub path: PathBuf,
+    /// Size in bytes as reported by bcachefs; absent when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    /// Human-readable size as printed by bcachefs (e.g. `1.56T`); absent when
+    /// unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
 }
 
 impl From<&Snapshot> for SnapshotInfo {
@@ -248,8 +289,22 @@ impl From<&Snapshot> for SnapshotInfo {
             time: snapshot.datetime,
             name: snapshot.file_name(),
             path: snapshot.path.clone(),
+            size_bytes: None,
+            size: None,
         }
     }
+}
+
+/// A subvolume inside the snapshot directory whose name does not follow the
+/// `<tier>-<date>` scheme, i.e. one bonsai does not manage.
+#[derive(Debug, Serialize)]
+pub struct UnmanagedInfo {
+    pub name: String,
+    pub path: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
 }
 
 /// `--json` output of `list`.
@@ -258,11 +313,13 @@ pub struct ListReport {
     pub targets: Vec<TargetSnapshots>,
 }
 
-/// Snapshots of a single target (newest first).
+/// Snapshots of a single target (newest first), plus subvolumes in the
+/// snapshot directory that bonsai does not manage.
 #[derive(Debug, Serialize)]
 pub struct TargetSnapshots {
     pub path: String,
     pub snapshots: Vec<SnapshotInfo>,
+    pub unmanaged: Vec<UnmanagedInfo>,
 }
 
 /// `--json` output of `snapshot --dry-run`.
@@ -315,16 +372,88 @@ pub struct TargetPlan {
     pub prune: Vec<SnapshotInfo>,
 }
 
-/// Build the `list` report (newest first per target), newest first.
-pub fn list_report(config: &Config, only: &[PathBuf]) -> Result<ListReport> {
+/// Build the `list` report (newest first per target).
+///
+/// Sizes come from `bcachefs subvolume list --json` where available; if the
+/// command fails (not mounted, old bcachefs, ...) a warning is logged and the
+/// report simply carries no sizes — the directory scan remains the basis.
+/// Subvolumes inside the snapshot directory that do not follow the naming
+/// scheme are reported as `unmanaged`, and directory entries missing from the
+/// subvolume list are warned about.
+pub fn list_report_with<B: Bcachefs>(
+    bcachefs: &B,
+    config: &Config,
+    only: &[PathBuf],
+) -> Result<ListReport> {
     let mut targets = Vec::new();
     for target in config.selected(only) {
         let dir = Snapshot::dir_for(&target.path, &config.snapshot_subdir);
         let mut snapshots = read_snapshots(&dir)?;
         snapshots.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
+
+        let entries = if target.path.is_dir() {
+            match bcachefs.list_snapshots(&target.path) {
+                Ok(entries) => Some(entries),
+                Err(error) => {
+                    warn!(
+                        path = %target.path.display(),
+                        error = %error,
+                        "could not list bcachefs subvolumes, sizes unavailable"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let prefix = format!("{}/", config.snapshot_subdir);
+        let mut infos = Vec::with_capacity(snapshots.len());
+        for snapshot in &snapshots {
+            let mut info = SnapshotInfo::from(snapshot);
+            if let Some(entries) = &entries {
+                let relative = format!("{prefix}{}", info.name);
+                match entries.iter().find(|entry| entry.path == relative) {
+                    Some(entry) => {
+                        info.size_bytes = entry.size_bytes;
+                        info.size = entry.size.clone();
+                    }
+                    None => warn!(
+                        path = %snapshot.path.display(),
+                        "snapshot directory is not a bcachefs subvolume"
+                    ),
+                }
+            }
+            infos.push(info);
+        }
+
+        let mut unmanaged = Vec::new();
+        if let Some(entries) = &entries {
+            for entry in entries {
+                let Some(name) = entry.path.strip_prefix(&prefix) else {
+                    continue;
+                };
+                // Only direct children of the snapshot directory are
+                // considered, matching what the directory scan sees.
+                if name.is_empty() || name.contains('/') {
+                    continue;
+                }
+                if Snapshot::parse_entry(&dir, name).is_some() {
+                    continue;
+                }
+                unmanaged.push(UnmanagedInfo {
+                    name: name.to_owned(),
+                    path: dir.join(name),
+                    size_bytes: entry.size_bytes,
+                    size: entry.size.clone(),
+                });
+            }
+        }
+
         targets.push(TargetSnapshots {
             path: target.path.display().to_string(),
-            snapshots: snapshots.iter().map(SnapshotInfo::from).collect(),
+            snapshots: infos,
+            unmanaged,
         });
     }
     Ok(ListReport { targets })
@@ -586,6 +715,26 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         assert_eq!(local_datetime(Tz::UTC, utc), utc.naive_utc());
+    }
+
+    #[test]
+    fn size_display_prefers_requested_format_with_fallback() {
+        // Default: bytes; human-readable: bcachefs string.
+        assert_eq!(
+            size_display(Some(2048), Some("1K"), false).as_deref(),
+            Some("2048")
+        );
+        assert_eq!(
+            size_display(Some(2048), Some("1K"), true).as_deref(),
+            Some("1K")
+        );
+        // Fallback to whichever is available.
+        assert_eq!(size_display(None, Some("1K"), false).as_deref(), Some("1K"));
+        assert_eq!(
+            size_display(Some(2048), None, true).as_deref(),
+            Some("2048")
+        );
+        assert_eq!(size_display(None, None, true), None);
     }
 
     #[test]

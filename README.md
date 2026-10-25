@@ -75,7 +75,17 @@ bonsai --config config.toml snapshot /spool/photos
 bonsai --config config.toml list --json
 bonsai --config config.toml snapshot --dry-run --json
 bonsai --config config.toml snapshot --json
+
+# List with sizes as reported by bcachefs (e.g. 1.56T instead of bytes).
+bonsai --config config.toml list --human-readable
 ```
+
+`list` additionally queries `bcachefs subvolume list --json -s` per target to
+report snapshot sizes and to surface subvolumes inside the snapshot directory
+that do not follow the `<tier>-<date>` naming scheme (shown as `unmanaged`,
+and as a separate array in `--json` output). If the bcachefs query fails (not
+mounted, old version, ...), a warning is logged and `list` still works, just
+without sizes. Planning and pruning remain based on the directory scan.
 
 For a real snapshot run, `snapshot --json` reports completed operations and
 per-target errors; the command exits non-zero if any operation failed. If the

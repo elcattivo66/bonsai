@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use bonsai::app;
-use bonsai::bcachefs::{Call, MockBcachefs};
+use bonsai::bcachefs::{Call, MockBcachefs, SubvolumeEntry};
 use bonsai::config::Config;
 use bonsai::restore::MockRestore;
 use chrono::NaiveDateTime;
@@ -70,6 +70,7 @@ fn target_of(call: &Call) -> Option<std::path::PathBuf> {
     let inner = match call {
         Call::Snapshot { dest, .. } => dest,
         Call::Delete { path } => path,
+        Call::ListSnapshots { .. } => return None,
     };
     inner
         .parent()
@@ -377,13 +378,83 @@ fn snapshot_report_keeps_partial_results_and_errors() {
 #[test]
 fn list_report_is_newest_first() {
     let (_dir, config) = setup_with_snapshots(".snapshots", 7);
-    let report = app::list_report(&config, &[]).unwrap();
+    let mock = MockBcachefs::new();
+    let report = app::list_report_with(&mock, &config, &[]).unwrap();
     let target = &report.targets[0];
     assert_eq!(target.snapshots.len(), 10);
     assert_eq!(target.snapshots[0].name, "daily-20260910");
 
     let value = serde_json::to_value(&report).unwrap();
     assert!(value["targets"][0]["snapshots"].is_array());
+}
+
+#[test]
+fn list_report_joins_sizes_and_collects_unmanaged() {
+    let (_dir, config) = setup_with_snapshots(".snapshots", 7);
+    let mock = MockBcachefs::new();
+    mock.set_list_entries(vec![
+        SubvolumeEntry {
+            path: ".snapshots/daily-20260910".to_owned(),
+            size_bytes: Some(2048),
+            size: Some("1K".to_owned()),
+        },
+        // A subvolume whose name does not follow the tier scheme.
+        SubvolumeEntry {
+            path: ".snapshots/manual-backup".to_owned(),
+            size_bytes: Some(512),
+            size: Some("512B".to_owned()),
+        },
+        // Outside the snapshot directory: must be ignored entirely.
+        SubvolumeEntry {
+            path: "other-subvolume".to_owned(),
+            size_bytes: Some(1),
+            size: None,
+        },
+        // Nested below the snapshot directory: not a direct child, ignored.
+        SubvolumeEntry {
+            path: ".snapshots/nested/deep".to_owned(),
+            size_bytes: Some(1),
+            size: None,
+        },
+    ]);
+    let report = app::list_report_with(&mock, &config, &[]).unwrap();
+    let target = &report.targets[0];
+
+    let newest = &target.snapshots[0];
+    assert_eq!(newest.name, "daily-20260910");
+    assert_eq!(newest.size_bytes, Some(2048));
+    assert_eq!(newest.size.as_deref(), Some("1K"));
+    // Snapshots without a matching entry simply have no size.
+    assert_eq!(target.snapshots[1].size_bytes, None);
+    assert_eq!(target.snapshots[1].size, None);
+
+    assert_eq!(target.unmanaged.len(), 1);
+    assert_eq!(target.unmanaged[0].name, "manual-backup");
+    assert_eq!(target.unmanaged[0].size_bytes, Some(512));
+
+    let value = serde_json::to_value(&report).unwrap();
+    assert_eq!(value["targets"][0]["snapshots"][0]["size_bytes"], 2048);
+    assert_eq!(value["targets"][0]["snapshots"][0]["size"], "1K");
+    // Size fields are omitted when unknown.
+    assert!(
+        value["targets"][0]["snapshots"][1]
+            .get("size_bytes")
+            .is_none()
+    );
+    assert_eq!(value["targets"][0]["unmanaged"][0]["name"], "manual-backup");
+}
+
+#[test]
+fn list_report_falls_back_when_subvolume_list_fails() {
+    let (_dir, config) = setup_with_snapshots(".snapshots", 7);
+    let mock = MockBcachefs::new();
+    mock.fail_list_snapshots();
+    let report = app::list_report_with(&mock, &config, &[]).unwrap();
+    let target = &report.targets[0];
+
+    assert_eq!(target.snapshots.len(), 10);
+    assert!(target.snapshots.iter().all(|s| s.size_bytes.is_none()));
+    assert!(target.unmanaged.is_empty());
 }
 
 #[test]
