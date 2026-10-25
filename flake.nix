@@ -31,7 +31,7 @@
           };
           # Pinned toolchain; keep in sync with rust-toolchain.toml and the
           # CI workflow.
-          toolchain = pkgs.rust-bin.stable."1.99.0".default;
+          toolchain = pkgs.rust-bin.stable."1.95.0".default;
           rustPlatform = pkgs.makeRustPlatform {
             rustc = toolchain;
             cargo = toolchain;
